@@ -62,3 +62,12 @@ def test_gate_subcommand_failure_routes_to_fix(tmp_path):
     code = main(["gate", "--file", str(f), "--cmd", "false"])
     assert code == 1
     assert Checkpoint.load(f).phase == "fix"
+
+
+def test_gate_supports_multiword_commands(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    # 多字詞命令(如真實的 `pytest tests/`)須被正確切分為 argv,而非當成單一執行檔
+    code = main(["gate", "--file", str(f), "--cmd", "sh -c 'exit 0'"])
+    assert code == 0
+    assert Checkpoint.load(f).phase == "review"

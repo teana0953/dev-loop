@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
@@ -41,7 +42,7 @@ def _cmd_event(args):
 
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
-    result = run_gate([[c] for c in args.cmd])
+    result = run_gate([shlex.split(c) for c in args.cmd])
     event = GATE_PASS if result.passed else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
