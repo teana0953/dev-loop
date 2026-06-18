@@ -135,3 +135,22 @@ def test_review_blocking_proposal_routes_to_propose(tmp_path):
     code = main(["review", "--file", str(f), "--report", str(report)])
     assert code == 0
     assert Checkpoint.load(f).phase == "propose"
+
+
+def test_invalid_event_returns_clean_error(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(f)
+    code = main(["event", "--file", str(f), "--event", "gate_pass"])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "error" in err.lower()
+    # checkpoint 不應被改動
+    assert Checkpoint.load(f).phase == "merge"
+
+
+def test_gate_timeout_flag_routes_to_fix(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "sh -c 'sleep 5'", "--timeout", "1"])
+    assert code == 1
+    assert Checkpoint.load(f).phase == "fix"

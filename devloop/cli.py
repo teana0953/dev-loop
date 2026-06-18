@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sys
 from datetime import datetime, timezone
 
 from devloop.checkpoint import Checkpoint
@@ -12,6 +13,7 @@ from devloop.statemachine import (
     GATE_FAIL,
     GATE_PASS,
     DEFAULT_MAX_ITERATIONS,
+    InvalidTransition,
     transition,
 )
 
@@ -45,7 +47,7 @@ def _cmd_event(args):
 
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
-    result = run_gate([shlex.split(c) for c in args.cmd])
+    result = run_gate([shlex.split(c) for c in args.cmd], timeout=args.timeout)
     event = GATE_PASS if result.passed else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
@@ -104,6 +106,7 @@ def build_parser():
     p_gate.add_argument("--file", required=True)
     p_gate.add_argument("--cmd", action="append", default=[])
     p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_gate.add_argument("--timeout", type=int, default=600)
     p_gate.set_defaults(func=_cmd_gate)
 
     p_resume = sub.add_parser("resume")
@@ -123,7 +126,11 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except InvalidTransition as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

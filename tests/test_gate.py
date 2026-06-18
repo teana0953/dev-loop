@@ -22,3 +22,11 @@ def test_captures_output_on_failure():
 
 def test_empty_commands_pass():
     assert run_gate([]).passed is True
+
+
+def test_timeout_treated_as_failure():
+    # 逾時的 gate 命令應視為失敗,而非永久阻塞
+    result = run_gate([["sh", "-c", "sleep 5"]], timeout=1)
+    assert result.passed is False
+    assert result.failed_command == ["sh", "-c", "sleep 5"]
+    assert "timeout" in result.output.lower()
