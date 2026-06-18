@@ -20,7 +20,9 @@ class Checkpoint:
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
-        Path(path).write_text(
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
             json.dumps(asdict(self), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
