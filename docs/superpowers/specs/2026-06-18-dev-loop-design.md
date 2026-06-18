@@ -185,7 +185,17 @@
 
 ## 11. 待實作時再定的細節(非本份範圍)
 
-- checkpoint 的實際儲存位置與格式。
-- `--resume` 與觸發 adapter 的具體實作(本機重排間隔、reset 時間點偵測方式)。
-- OpenSpec、git trunk-based、TDD 各工具的實際指令封裝。
-- non-blocking follow-up 的落地形式(issue / task / 清單檔)。
+已於 `devloop` 引擎實作(見 `devloop/` 與 `skills/dev-loop/SKILL.md`):
+
+- checkpoint 格式(JSON,`Checkpoint` dataclass);預設路徑 `.devloop/checkpoint.json`。
+- resume 排程決策(`plan_resume` + `resume` 子命令)。
+- OpenSpec 指令封裝(`validate-change` / `archive` 子命令)。
+- review 分級與 non-blocking 累積(`review` 子命令寫入 checkpoint.non_blocking)。
+- hard-gate timeout 與 CLI 不合法 event 的乾淨錯誤處理。
+
+仍由 SKILL.md 編排層 / 人工處理(刻意不在引擎內):
+
+- git trunk-based 的實際 merge 動作與短命分支管理。
+- TDD 開發本身(apply / fix 由 Sonnet 執行)。
+- resume 觸發 adapter 的實際排程接線(本機 wakeup / 雲端 cron 由外層驅動,引擎只提供決策)。
+- non-blocking follow-up 的最終落地形式(issue / task / 清單檔)。
