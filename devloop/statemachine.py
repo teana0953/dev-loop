@@ -32,8 +32,8 @@ class InvalidTransition(Exception):
 def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
     """純函式狀態轉移。回傳 (new_phase, new_iteration)。
 
-    iteration 在 gate_pass 進入 review 時 +1(代表第幾輪 review)。
-    升級邏輯於 Task 4 加入。
+    iteration 在 gate_pass 進入 review 時 +1(代表第幾輪 review);
+    超過 max_iterations 則轉為 escalated。
     """
     if phase == "apply" and event == APPLY_DONE:
         return ("gate", iteration)
