@@ -38,7 +38,10 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
     if phase == "apply" and event == APPLY_DONE:
         return ("gate", iteration)
     if phase == "gate" and event == GATE_PASS:
-        return ("review", iteration + 1)
+        new_iteration = iteration + 1
+        if new_iteration > max_iterations:
+            return ("escalated", new_iteration)
+        return ("review", new_iteration)
     if phase == "gate" and event == GATE_FAIL:
         return ("fix", iteration)
     if phase == "review" and event == REVIEW_NO_BLOCKING:

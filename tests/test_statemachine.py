@@ -44,3 +44,13 @@ def test_fix_done_returns_to_gate():
 def test_invalid_transition_raises():
     with pytest.raises(InvalidTransition):
         transition("merge", 1, GATE_PASS)
+
+
+def test_gate_pass_within_limit_enters_review():
+    # max=3:iteration 0->1, 1->2, 2->3 都還在範圍內
+    assert transition("gate", 2, GATE_PASS, max_iterations=3) == ("review", 3)
+
+
+def test_gate_pass_exceeding_limit_escalates():
+    # 第 4 次 gate_pass(3->4)超過上限 → escalated
+    assert transition("gate", 3, GATE_PASS, max_iterations=3) == ("escalated", 4)
