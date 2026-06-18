@@ -256,3 +256,15 @@ def test_auto_resume_propagates_exit_code(tmp_path, monkeypatch):
         "--reset-at", "2026-06-18T15:00:00+00:00", "--exec", "true",
     ])
     assert code == 7
+
+
+def test_status_shows_change_id_and_branch(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="add-foo", branch="loop/add-foo", iteration=2).save(f)
+    assert main(["status", "--file", str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "change_id=add-foo" in out
+    assert "branch=loop/add-foo" in out
+    # 向後相容
+    assert "phase=review" in out
+    assert "iteration=2" in out
