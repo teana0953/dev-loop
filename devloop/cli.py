@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
+from devloop.openspec import archive_change, validate_change
 from devloop.resume import plan_resume
 from devloop.review import classify, non_blocking_notes, parse_review_report
 from devloop.statemachine import (
@@ -82,6 +83,20 @@ def _cmd_review(args):
     return 0
 
 
+def _cmd_validate_change(args):
+    cp = Checkpoint.load(args.file)
+    result = validate_change(cp.change_id)
+    print(result.output)
+    return 0 if result.ok else 1
+
+
+def _cmd_archive(args):
+    cp = Checkpoint.load(args.file)
+    result = archive_change(cp.change_id)
+    print(result.output)
+    return 0 if result.ok else 1
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -119,6 +134,14 @@ def build_parser():
     p_review.add_argument("--report", required=True)
     p_review.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_review.set_defaults(func=_cmd_review)
+
+    p_validate = sub.add_parser("validate-change")
+    p_validate.add_argument("--file", required=True)
+    p_validate.set_defaults(func=_cmd_validate_change)
+
+    p_archive = sub.add_parser("archive")
+    p_archive.add_argument("--file", required=True)
+    p_archive.set_defaults(func=_cmd_archive)
 
     return parser
 

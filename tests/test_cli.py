@@ -154,3 +154,65 @@ def test_gate_timeout_flag_routes_to_fix(tmp_path):
     code = main(["gate", "--file", str(f), "--cmd", "sh -c 'sleep 5'", "--timeout", "1"])
     assert code == 1
     assert Checkpoint.load(f).phase == "fix"
+
+
+def test_validate_change_subcommand(tmp_path, monkeypatch, capsys):
+    import devloop.cli as cli
+    from devloop.openspec import OpenSpecResult
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="propose", change_id="add-foo", branch="b").save(f)
+    seen = {}
+
+    def fake_validate(change_id, runner=None):
+        seen["id"] = change_id
+        return OpenSpecResult(ok=True, command=["openspec", "validate", change_id], output="ok")
+
+    monkeypatch.setattr(cli, "validate_change", fake_validate)
+    code = cli.main(["validate-change", "--file", str(f)])
+    assert code == 0
+    assert seen["id"] == "add-foo"
+
+
+def test_validate_change_failure_returns_1(tmp_path, monkeypatch):
+    import devloop.cli as cli
+    from devloop.openspec import OpenSpecResult
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="propose", change_id="bad", branch="b").save(f)
+    monkeypatch.setattr(
+        cli, "validate_change",
+        lambda change_id, runner=None: OpenSpecResult(ok=False, command=["openspec", "validate", change_id], output="invalid"),
+    )
+    assert cli.main(["validate-change", "--file", str(f)]) == 1
+
+
+def test_archive_subcommand(tmp_path, monkeypatch):
+    import devloop.cli as cli
+    from devloop.openspec import OpenSpecResult
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="add-foo", branch="b").save(f)
+    seen = {}
+
+    def fake_archive(change_id, runner=None):
+        seen["id"] = change_id
+        return OpenSpecResult(ok=True, command=["openspec", "archive", change_id], output="archived")
+
+    monkeypatch.setattr(cli, "archive_change", fake_archive)
+    code = cli.main(["archive", "--file", str(f)])
+    assert code == 0
+    assert seen["id"] == "add-foo"
+
+
+def test_archive_failure_returns_1(tmp_path, monkeypatch):
+    import devloop.cli as cli
+    from devloop.openspec import OpenSpecResult
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="x", branch="b").save(f)
+    monkeypatch.setattr(
+        cli, "archive_change",
+        lambda change_id, runner=None: OpenSpecResult(ok=False, command=["openspec", "archive", change_id], output="nope"),
+    )
+    assert cli.main(["archive", "--file", str(f)]) == 1

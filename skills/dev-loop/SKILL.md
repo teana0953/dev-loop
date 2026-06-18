@@ -10,8 +10,8 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 ## 流程
 
 1. **Brainstorm(Opus)**:用 `/brainstorming` 產出設計文件。✋ 等使用者批准。
-2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change。✋ 等使用者批准。
-3. **啟動引擎**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch>`
+2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
+3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch>`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。✋ 驗證通過後等使用者批准提案。
 4. **Apply(Sonnet · TDD)**:逐 task red→green→refactor。完成後 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event apply_done`。
 5. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>"`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
    - exit 0 → 階段已進到 review。
@@ -23,7 +23,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
      - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
    - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者。
 7. **Fix**:機械性 → Sonnet;架構性 → Opus。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 5。
-8. **Merge & Archive(自動)**:短命分支 merge 回 trunk →`openspec archive`→ 將 review 報告的 non-blocking 項落成 follow-up。
+8. **Merge & Archive(自動)**:短命分支 merge 回 trunk →`python3 -m devloop.cli archive --file .devloop/checkpoint.json`(歸檔 change、同步 main specs)→ 將 checkpoint 累積的 non-blocking 項落成 follow-up。
 
 ## Token 用罄續跑
 
