@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+@dataclass
+class Checkpoint:
+    """Dev-loop 斷點狀態(規格 9A)。"""
+
+    phase: str
+    change_id: str
+    branch: str
+    iteration: int = 0
+    last_artifact: str = ""
+    non_blocking: list = field(default_factory=list)
+    updated_at: str = ""
+
+    def save(self, path) -> None:
+        self.updated_at = datetime.now(timezone.utc).isoformat()
+        Path(path).write_text(
+            json.dumps(asdict(self), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path) -> "Checkpoint":
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls(**data)
