@@ -28,7 +28,10 @@ def _cmd_start(args):
 
 def _cmd_status(args):
     cp = Checkpoint.load(args.file)
-    print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+    print(
+        "phase=%s iteration=%d change_id=%s branch=%s"
+        % (cp.phase, cp.iteration, cp.change_id, cp.branch)
+    )
     return 0
 
 
