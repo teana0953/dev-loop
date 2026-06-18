@@ -17,7 +17,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
    - exit 0 → 階段已進到 review。
    - exit 1 → 階段已進到 fix,回步驟 7。
 6. **Review(Opus subagent,冷啟動)**:輸入 diff + OpenSpec proposal(真相來源)+ 測試報告 + 前次 review 報告;產出 review 報告 JSON(`findings[]`,severity ∈ blocking/non_blocking,level ∈ code/proposal)。
-   - 用 `devloop.review.classify` 取得事件,再 `event --event <該事件>`:
+   - 產出 review 報告 JSON 後執行:`python3 -m devloop.cli review --file .devloop/checkpoint.json --report <report.json>`,引擎會分級、累積 non-blocking、並依結果前進到 merge / fix / propose。
      - `review_no_blocking` → merge(步驟 8)
      - `review_blocking_code` → fix(步驟 7)
      - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
@@ -27,4 +27,4 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## Token 用罄續跑
 
-每階段轉移後 checkpoint 已更新。預設本機 resume:用 `devloop.resume.plan_resume(phase, now, reset_at)` 決定立即續跑或睡 `sleep_seconds` 後重檢(週期性重排,因 wakeup 上限 3600 秒)。到 reset 後從 checkpoint 的 phase 續跑。
+每階段轉移後 checkpoint 已更新。預設本機 resume:用 `python3 -m devloop.cli resume --file .devloop/checkpoint.json --reset-at <ISO>` 取得 ready / sleep_seconds / phase;ready=True 即從該 phase 續跑,否則睡 sleep_seconds 後重檢(週期性重排,因 wakeup 上限 3600 秒)。到 reset 後從 checkpoint 的 phase 續跑。

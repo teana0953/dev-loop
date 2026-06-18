@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import shlex
+from datetime import datetime, timezone
 
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
+from devloop.resume import plan_resume
+from devloop.review import classify, non_blocking_notes, parse_review_report
 from devloop.statemachine import (
     GATE_FAIL,
     GATE_PASS,
@@ -54,6 +57,29 @@ def _cmd_gate(args):
     return 0
 
 
+def _cmd_resume(args):
+    cp = Checkpoint.load(args.file)
+    now = datetime.now(timezone.utc)
+    reset_at = datetime.fromisoformat(args.reset_at) if args.reset_at else now
+    action = plan_resume(cp.phase, now, reset_at)
+    print(
+        "ready=%s sleep_seconds=%d phase=%s"
+        % (action.ready, action.sleep_seconds, action.phase)
+    )
+    return 0
+
+
+def _cmd_review(args):
+    cp = Checkpoint.load(args.file)
+    findings = parse_review_report(args.report)
+    cp.non_blocking.extend(non_blocking_notes(findings))
+    event = classify(findings)
+    cp = _apply_event(cp, event, args.max)
+    cp.save(args.file)
+    print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -79,6 +105,17 @@ def build_parser():
     p_gate.add_argument("--cmd", action="append", default=[])
     p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_gate.set_defaults(func=_cmd_gate)
+
+    p_resume = sub.add_parser("resume")
+    p_resume.add_argument("--file", required=True)
+    p_resume.add_argument("--reset-at", dest="reset_at", default=None)
+    p_resume.set_defaults(func=_cmd_resume)
+
+    p_review = sub.add_parser("review")
+    p_review.add_argument("--file", required=True)
+    p_review.add_argument("--report", required=True)
+    p_review.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_review.set_defaults(func=_cmd_review)
 
     return parser
 

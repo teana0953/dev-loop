@@ -71,3 +71,67 @@ def test_gate_supports_multiword_commands(tmp_path):
     code = main(["gate", "--file", str(f), "--cmd", "sh -c 'exit 0'"])
     assert code == 0
     assert Checkpoint.load(f).phase == "review"
+
+
+from datetime import timezone, datetime, timedelta
+import json
+
+
+def test_resume_ready_when_no_reset_at(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(f)
+    code = main(["resume", "--file", str(f)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ready=True" in out
+    assert "sleep_seconds=0" in out
+    assert "phase=review" in out
+
+
+def test_resume_not_ready_when_reset_in_future(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="fix", change_id="c", branch="b").save(f)
+    future = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+    code = main(["resume", "--file", str(f), "--reset-at", future])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ready=False" in out
+    assert "sleep_seconds=3600" in out
+
+
+def test_review_no_blocking_advances_to_merge(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(f)
+    report = tmp_path / "r.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "code", "note": "rename x"}
+    ]}), encoding="utf-8")
+    code = main(["review", "--file", str(f), "--report", str(report)])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "merge"
+    assert cp.non_blocking == ["rename x"]
+
+
+def test_review_blocking_code_routes_to_fix(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(f)
+    report = tmp_path / "r.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "code", "note": "bug"}
+    ]}), encoding="utf-8")
+    code = main(["review", "--file", str(f), "--report", str(report)])
+    assert code == 0
+    assert Checkpoint.load(f).phase == "fix"
+
+
+def test_review_blocking_proposal_routes_to_propose(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(f)
+    report = tmp_path / "r.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "spec wrong"}
+    ]}), encoding="utf-8")
+    code = main(["review", "--file", str(f), "--report", str(report)])
+    assert code == 0
+    assert Checkpoint.load(f).phase == "propose"
