@@ -216,3 +216,43 @@ def test_archive_failure_returns_1(tmp_path, monkeypatch):
         lambda change_id, runner=None: OpenSpecResult(ok=False, command=["openspec", "archive", change_id], output="nope"),
     )
     assert cli.main(["archive", "--file", str(f)]) == 1
+
+
+def test_auto_resume_subcommand(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)
+    captured = {}
+
+    def fake_run_adapter(checkpoint_path, reset_at, exec_command, **kw):
+        captured["path"] = str(checkpoint_path)
+        captured["exec"] = exec_command
+        captured["reset_year"] = reset_at.year
+        return 0
+
+    monkeypatch.setattr(cli, "run_adapter", fake_run_adapter)
+    code = cli.main([
+        "auto-resume",
+        "--file", str(f),
+        "--reset-at", "2026-06-18T15:00:00+00:00",
+        "--exec", "claude -p '/dev-loop resume'",
+    ])
+    assert code == 0
+    assert captured["path"] == str(f)
+    # --exec 應被 shlex 切分成 argv
+    assert captured["exec"] == ["claude", "-p", "/dev-loop resume"]
+    assert captured["reset_year"] == 2026
+
+
+def test_auto_resume_propagates_exit_code(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="fix", change_id="c", branch="b").save(f)
+    monkeypatch.setattr(cli, "run_adapter", lambda *a, **k: 7)
+    code = cli.main([
+        "auto-resume", "--file", str(f),
+        "--reset-at", "2026-06-18T15:00:00+00:00", "--exec", "true",
+    ])
+    assert code == 7

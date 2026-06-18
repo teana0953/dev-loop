@@ -27,4 +27,19 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## Token 用罄續跑
 
-每階段轉移後 checkpoint 已更新。預設本機 resume:用 `python3 -m devloop.cli resume --file .devloop/checkpoint.json --reset-at <ISO>` 取得 ready / sleep_seconds / phase;ready=True 即從該 phase 續跑,否則睡 sleep_seconds 後重檢(週期性重排,因 wakeup 上限 3600 秒)。到 reset 後從 checkpoint 的 phase 續跑。
+每階段轉移後 checkpoint 已更新。
+
+**一次性決策**:`python3 -m devloop.cli resume --file .devloop/checkpoint.json --reset-at <ISO>` 回傳 ready / sleep_seconds / phase。
+
+**本機自動續跑(預設 adapter)**:當偵測到 usage limit、得知 reset 時間點 T 後,在 **agent 以外的獨立終端機**執行:
+
+```
+python3 -m devloop.cli auto-resume \
+  --file .devloop/checkpoint.json \
+  --reset-at <T 的 ISO 字串> \
+  --exec "<你的續跑命令,例如 claude -p '/dev-loop resume'>"
+```
+
+它是一個獨立 OS 程序(不依賴當下被卡住的 agent):反覆讀 checkpoint、依 `plan_resume` 決定還要睡多久(每次最多 3600 秒,週期性重排),睡到 T 後執行 `--exec` 的續跑命令,並回傳其 exit code。續跑命令會從 checkpoint 的 phase 接著跑。
+
+> 雲端替代方案:改用 cron / `/schedule` 在 T 觸發同一條 `--exec`,並改為每階段把分支 + checkpoint push 到 remote(見規格 §9B)。

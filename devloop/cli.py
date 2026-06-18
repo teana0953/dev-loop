@@ -5,6 +5,7 @@ import shlex
 import sys
 from datetime import datetime, timezone
 
+from devloop.adapter import run_adapter
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
@@ -83,6 +84,11 @@ def _cmd_review(args):
     return 0
 
 
+def _cmd_auto_resume(args):
+    reset_at = datetime.fromisoformat(args.reset_at)
+    return run_adapter(args.file, reset_at, shlex.split(args.exec))
+
+
 def _cmd_validate_change(args):
     cp = Checkpoint.load(args.file)
     result = validate_change(cp.change_id)
@@ -134,6 +140,12 @@ def build_parser():
     p_review.add_argument("--report", required=True)
     p_review.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_review.set_defaults(func=_cmd_review)
+
+    p_auto = sub.add_parser("auto-resume")
+    p_auto.add_argument("--file", required=True)
+    p_auto.add_argument("--reset-at", dest="reset_at", required=True)
+    p_auto.add_argument("--exec", dest="exec", required=True)
+    p_auto.set_defaults(func=_cmd_auto_resume)
 
     p_validate = sub.add_parser("validate-change")
     p_validate.add_argument("--file", required=True)
