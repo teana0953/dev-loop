@@ -36,3 +36,11 @@ def test_defaults(tmp_path):
     assert cp.iteration == 0
     assert cp.last_artifact == ""
     assert cp.non_blocking == []
+
+
+def test_save_creates_missing_parent_dirs(tmp_path):
+    # checkpoint 路徑的父目錄(如 .devloop/)不存在時,save 應自動建立
+    path = tmp_path / ".devloop" / "checkpoint.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="b")
+    cp.save(path)
+    assert Checkpoint.load(path).phase == "apply"
