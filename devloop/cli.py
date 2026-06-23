@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
+import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-from devloop.adapter import run_adapter
+from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
@@ -21,7 +24,12 @@ from devloop.statemachine import (
 
 
 def _cmd_start(args):
-    cp = Checkpoint(phase="apply", change_id=args.change_id, branch=args.branch)
+    cp = Checkpoint(
+        phase="apply",
+        change_id=args.change_id,
+        branch=args.branch,
+        resume_exec=args.resume_exec,
+    )
     cp.save(args.file)
     return 0
 
@@ -92,6 +100,56 @@ def _cmd_auto_resume(args):
     return run_adapter(args.file, reset_at, shlex.split(args.exec))
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def _spawn_watcher(exec_command, heartbeat):
+    """spawn 一個 detached 行程跑 watch 子命令,回傳其 PID。"""
+    proc = subprocess.Popen(
+        [
+            sys.executable, "-m", "devloop.cli", "watch",
+            "--exec", shlex.join(exec_command),
+            "--heartbeat", str(heartbeat),
+        ],
+        start_new_session=True,
+    )
+    return proc.pid
+
+
+def _cmd_arm_local(args):
+    cp = Checkpoint.load(args.file)
+    exec_str = args.exec or cp.resume_exec
+    if not exec_str:
+        print(
+            "error: no resume command (checkpoint.resume_exec empty and no --exec)",
+            file=sys.stderr,
+        )
+        return 2
+    pid_path = Path(args.file).parent / "watcher.pid"
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+        except ValueError:
+            pid = None
+        if pid is not None and _pid_alive(pid):
+            print("watcher already running (pid=%d)" % pid)
+            return 0
+    pid = _spawn_watcher(shlex.split(exec_str), args.heartbeat)
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(pid))
+    print("watcher armed (pid=%d)" % pid)
+    return 0
+
+
+def _cmd_watch(args):
+    return run_watcher(shlex.split(args.exec), heartbeat=args.heartbeat)
+
+
 def _cmd_validate_change(args):
     cp = Checkpoint.load(args.file)
     result = validate_change(cp.change_id)
@@ -114,6 +172,7 @@ def build_parser():
     p_start.add_argument("--file", required=True)
     p_start.add_argument("--change-id", required=True, dest="change_id")
     p_start.add_argument("--branch", required=True)
+    p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status")
@@ -149,6 +208,17 @@ def build_parser():
     p_auto.add_argument("--reset-at", dest="reset_at", required=True)
     p_auto.add_argument("--exec", dest="exec", required=True)
     p_auto.set_defaults(func=_cmd_auto_resume)
+
+    p_arm = sub.add_parser("arm-local")
+    p_arm.add_argument("--file", required=True)
+    p_arm.add_argument("--exec", dest="exec", default=None)
+    p_arm.add_argument("--heartbeat", type=int, default=DEFAULT_HEARTBEAT)
+    p_arm.set_defaults(func=_cmd_arm_local)
+
+    p_watch = sub.add_parser("watch")
+    p_watch.add_argument("--exec", dest="exec", required=True)
+    p_watch.add_argument("--heartbeat", type=int, default=DEFAULT_HEARTBEAT)
+    p_watch.set_defaults(func=_cmd_watch)
 
     p_validate = sub.add_parser("validate-change")
     p_validate.add_argument("--file", required=True)

@@ -38,6 +38,23 @@ def test_defaults(tmp_path):
     assert cp.non_blocking == []
 
 
+def test_resume_exec_defaults_none(tmp_path):
+    cp = Checkpoint(phase="apply", change_id="c", branch="b")
+    assert cp.resume_exec is None
+
+
+def test_resume_exec_roundtrip(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    cp = Checkpoint(
+        phase="apply",
+        change_id="c",
+        branch="b",
+        resume_exec="claude -p '/dev-loop resume'",
+    )
+    cp.save(path)
+    assert Checkpoint.load(path).resume_exec == "claude -p '/dev-loop resume'"
+
+
 def test_save_creates_missing_parent_dirs(tmp_path):
     # checkpoint 路徑的父目錄(如 .devloop/)不存在時,save 應自動建立
     path = tmp_path / ".devloop" / "checkpoint.json"

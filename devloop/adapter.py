@@ -5,7 +5,9 @@ import time
 from datetime import datetime, timezone
 
 from devloop.checkpoint import Checkpoint
-from devloop.resume import plan_resume
+from devloop.resume import MAX_SLEEP_SECONDS, plan_resume
+
+DEFAULT_HEARTBEAT = 1800  # 兩次重試間預設間隔(秒)
 
 
 def _default_now():
@@ -14,6 +16,30 @@ def _default_now():
 
 def _default_run(cmd):
     return subprocess.run(cmd).returncode
+
+
+def run_watcher(
+    exec_command,
+    heartbeat=DEFAULT_HEARTBEAT,
+    sleep_fn=None,
+    run_fn=None,
+):
+    """無 reset 時間 · 週期重試的續跑 watcher(規格 §9B、resume-trigger)。
+
+    反覆執行 exec_command:回傳 0 即視為 loop 已被重新推進,停止並回傳 0;
+    回傳非 0 視為仍被限流,睡一個 heartbeat 後重試。heartbeat 夾到
+    MAX_SLEEP_SECONDS(harness wakeup 上限)。
+
+    sleep_fn / run_fn 可注入以便測試。
+    """
+    sleep_fn = sleep_fn or time.sleep
+    run_fn = run_fn or _default_run
+    interval = min(heartbeat, MAX_SLEEP_SECONDS)
+    while True:
+        code = run_fn(exec_command)
+        if code == 0:
+            return 0
+        sleep_fn(interval)
 
 
 def run_adapter(

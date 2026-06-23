@@ -17,6 +17,7 @@ class Checkpoint:
     last_artifact: str = ""
     non_blocking: list = field(default_factory=list)
     updated_at: str = ""
+    resume_exec: str = None
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
