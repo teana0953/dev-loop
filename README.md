@@ -39,15 +39,16 @@ Claude 會依流程跑:brainstorm ✋ → OpenSpec propose → validate ✋ → 
 
 | 子命令 | 作用 |
 |---|---|
-| `start --change-id <id> --branch <b>` | 建立 checkpoint(phase=apply) |
+| `start --change-id <id> --branch <b> [--resume-exec "<cmd>"]` | 建立 checkpoint(phase=apply);存續跑命令 |
 | `status` | 印 `phase / iteration / change_id / branch` |
 | `event --event <e> [--max N]` | 套用狀態轉移 |
 | `gate --cmd "<cmd>" [...] [--timeout N]` | 依序跑命令;全綠→review,失敗→fix |
 | `review --report <json>` | 依 review 報告分級並前進(merge/fix/propose) |
 | `validate-change` | `openspec validate <change> --strict` |
 | `archive` | `openspec archive <change> --yes` |
+| `arm-local [--exec "<cmd>"] [--heartbeat N]` | 確保有且僅一個 detached watcher(idempotent) |
 | `resume [--reset-at <ISO>]` | 回報 ready / sleep_seconds / phase |
-| `auto-resume --reset-at <ISO> --exec "<cmd>"` | 本機等到 reset 後執行續跑命令 |
+| `auto-resume --reset-at <ISO> --exec "<cmd>"` | 本機等到 reset 後執行續跑命令(進階:精準睡) |
 
 review 報告格式:
 ```json
@@ -58,16 +59,16 @@ review 報告格式:
 
 ## Token 用罄續跑
 
-偵測到 usage limit、得知 reset 時間點 T 後,在 **agent 以外的終端**執行:
+關鍵是**事前部署**:每個會寫 checkpoint 的點(start/event/gate/review)之後都 `arm-local`,確保 token 用罄前觸發器已就位。`start` 以 `--resume-exec` 把續跑命令寫進 checkpoint,arm-local spawn 的 detached watcher 便能自包讀取。
 
 ```bash
-~/.claude/skills/dev-loop/devloop auto-resume \
-  --file /your/project/.devloop/checkpoint.json \
-  --reset-at <T 的 ISO 字串> \
-  --exec "claude -p '/dev-loop resume'"
+~/.claude/skills/dev-loop/devloop arm-local \
+  --file /your/project/.devloop/checkpoint.json
 ```
 
-它是獨立 OS 程序(不依賴被卡住的 agent):週期性重排(每次最多 3600s)睡到 T,再執行續跑命令。
+watcher 是獨立 OS 程序(不依賴被卡住的 agent):反覆執行續跑命令,回 0 即停(loop 已推進),否則睡一個 heartbeat(預設 1800s、上限 3600s)再試。arm-local idempotent——watcher 活著 no-op、死了自癒重生。被推進的 agent 在其首個 checkpoint 再次 arm,心跳自我延續。
+
+> 進階(已知 reset 時間想精準睡):`auto-resume --reset-at <ISO> --exec "<cmd>"` 睡到 T 再跑。雲端替代:`trigger=harness` 搭配 cron / `/schedule`,並每階段 push 分支 + checkpoint。
 
 ## 開發本工具
 

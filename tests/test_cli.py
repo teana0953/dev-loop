@@ -1,3 +1,5 @@
+import os
+
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
 
@@ -11,6 +13,23 @@ def test_start_creates_checkpoint(tmp_path, capsys):
     assert cp.change_id == "add-foo"
     assert cp.branch == "loop/add-foo"
     assert cp.iteration == 0
+
+
+def test_start_stores_resume_exec(tmp_path):
+    f = tmp_path / "cp.json"
+    code = main([
+        "start", "--file", str(f),
+        "--change-id", "add-foo", "--branch", "loop/add-foo",
+        "--resume-exec", "claude -p '/dev-loop resume'",
+    ])
+    assert code == 0
+    assert Checkpoint.load(f).resume_exec == "claude -p '/dev-loop resume'"
+
+
+def test_start_resume_exec_defaults_none(tmp_path):
+    f = tmp_path / "cp.json"
+    main(["start", "--file", str(f), "--change-id", "c", "--branch", "b"])
+    assert Checkpoint.load(f).resume_exec is None
 
 
 def test_status_prints_phase_and_iteration(tmp_path, capsys):
@@ -256,6 +275,114 @@ def test_auto_resume_propagates_exit_code(tmp_path, monkeypatch):
         "--reset-at", "2026-06-18T15:00:00+00:00", "--exec", "true",
     ])
     assert code == 7
+
+
+def test_arm_local_spawns_when_no_pidfile(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(
+        phase="review", change_id="c", branch="b",
+        resume_exec="claude -p '/dev-loop resume'",
+    ).save(f)
+    spawned = {}
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (spawned.update(cmd=cmd), 4321)[1])
+
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert spawned["cmd"] == ["claude", "-p", "/dev-loop resume"]
+    assert (f.parent / "watcher.pid").read_text().strip() == "4321"
+
+
+def test_arm_local_noop_when_watcher_alive(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    (f.parent / "watcher.pid").write_text("999")
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: spawned.append(cmd) or 1)
+
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert spawned == []
+    assert (f.parent / "watcher.pid").read_text().strip() == "999"
+
+
+def test_arm_local_respawns_on_stale_pid(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    (f.parent / "watcher.pid").write_text("999")
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 5555)
+
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert (f.parent / "watcher.pid").read_text().strip() == "5555"
+
+
+def test_arm_local_errors_without_exec(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: spawned.append(cmd) or 1)
+
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code != 0
+    assert spawned == []
+    assert not (f.parent / "watcher.pid").exists()
+
+
+def test_arm_local_exec_override(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+    captured = {}
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (captured.update(cmd=cmd), 7)[1])
+
+    code = cli.main(["arm-local", "--file", str(f), "--exec", "true"])
+    assert code == 0
+    assert captured["cmd"] == ["true"]
+
+
+def test_watch_subcommand_runs_exec_real():
+    # watch → run_watcher → 真實 subprocess:`true` 立即回 0,不 mock
+    assert main(["watch", "--exec", "true"]) == 0
+
+
+def test_arm_local_spawns_real_watcher(tmp_path):
+    # 真實 spawn 路徑(無 mock):arm-local → detached watch → run_watcher → 跑 exec。
+    # 用副作用(touch marker)驗證整條路徑確實執行,避免 zombie 導致的 pid 存活誤判。
+    import time
+
+    f = tmp_path / ".devloop" / "cp.json"
+    marker = tmp_path / "ran.marker"
+    Checkpoint(
+        phase="review", change_id="c", branch="b",
+        resume_exec="touch %s" % marker,
+    ).save(f)
+
+    assert main(["arm-local", "--file", str(f)]) == 0
+    pid = int((f.parent / "watcher.pid").read_text().strip())
+
+    try:
+        for _ in range(50):
+            if marker.exists():
+                break
+            time.sleep(0.1)
+        assert marker.exists(), "watcher 未執行 resume_exec(marker 未出現)"
+    finally:
+        try:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)  # reap,避免遺留 zombie
+        except OSError:
+            pass
 
 
 def test_status_shows_change_id_and_branch(tmp_path, capsys):
