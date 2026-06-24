@@ -103,7 +103,11 @@ def _cmd_auto_resume(args):
 def _pid_alive(pid):
     try:
         os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+    except ProcessLookupError:
+        return False  # ESRCH:無此行程 → 死
+    except PermissionError:
+        return True  # EPERM:行程存在但屬他人 → 存活
+    except OSError:
         return False
     return True
 

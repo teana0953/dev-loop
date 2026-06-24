@@ -351,6 +351,47 @@ def test_arm_local_exec_override(tmp_path, monkeypatch):
     assert captured["cmd"] == ["true"]
 
 
+def test_pid_alive_true_when_running(monkeypatch):
+    import devloop.cli as cli
+
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: None)
+    assert cli._pid_alive(123) is True
+
+
+def test_pid_alive_false_when_no_such_process(monkeypatch):
+    import devloop.cli as cli
+
+    def boom(pid, sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(cli.os, "kill", boom)
+    assert cli._pid_alive(123) is False
+
+
+def test_pid_alive_true_on_permission_error(monkeypatch):
+    # EPERM:行程存在但屬他人 → 視為存活
+    import devloop.cli as cli
+
+    def boom(pid, sig):
+        raise PermissionError()
+
+    monkeypatch.setattr(cli.os, "kill", boom)
+    assert cli._pid_alive(123) is True
+
+
+def test_arm_local_respawns_on_nonnumeric_pid(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    (f.parent / "watcher.pid").write_text("garbage")
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 8888)
+
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert (f.parent / "watcher.pid").read_text().strip() == "8888"
+
+
 def test_watch_subcommand_runs_exec_real():
     # watch → run_watcher → 真實 subprocess:`true` 立即回 0,不 mock
     assert main(["watch", "--exec", "true"]) == 0
