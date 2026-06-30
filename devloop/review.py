@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from devloop.statemachine import (
+    QA_FAIL,
+    QA_PASS,
     REVIEW_BLOCKING_CODE,
     REVIEW_BLOCKING_PROPOSAL,
     REVIEW_NO_BLOCKING,
@@ -32,3 +34,10 @@ def non_blocking_notes(findings):
 def parse_review_report(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return data["findings"]
+
+
+def classify_qa(findings):
+    """QA 報告分類:任一 blocking → QA_FAIL;否則 QA_PASS。"""
+    if any(f.get("severity") == "blocking" for f in findings):
+        return QA_FAIL
+    return QA_PASS

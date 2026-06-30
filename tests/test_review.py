@@ -1,7 +1,9 @@
 import json
 
-from devloop.review import classify, non_blocking_notes, parse_review_report
+from devloop.review import classify, classify_qa, non_blocking_notes, parse_review_report
 from devloop.statemachine import (
+    QA_FAIL,
+    QA_PASS,
     REVIEW_BLOCKING_CODE,
     REVIEW_BLOCKING_PROPOSAL,
     REVIEW_NO_BLOCKING,
@@ -47,3 +49,17 @@ def test_parse_review_report(tmp_path):
     )
     findings = parse_review_report(path)
     assert findings == [{"severity": "blocking", "level": "code", "note": "x"}]
+
+
+def test_classify_qa_blocking_fails():
+    findings = [{"severity": "blocking", "level": "behavior", "note": "crash on empty input"}]
+    assert classify_qa(findings) == QA_FAIL
+
+
+def test_classify_qa_no_blocking_passes():
+    findings = [{"severity": "non_blocking", "level": "behavior", "note": "slow"}]
+    assert classify_qa(findings) == QA_PASS
+
+
+def test_classify_qa_empty_passes():
+    assert classify_qa([]) == QA_PASS
