@@ -890,6 +890,7 @@ def test_finish_merge_writes_followup(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "finish: merge" in out
+    assert "followup:" in out  # SKILL 依此行得知已落地的 follow-up 檔路徑
     assert "- rename x" in followup.read_text(encoding="utf-8")
 
 
