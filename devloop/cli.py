@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
+from devloop.changemeta import load_change_meta
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
@@ -21,6 +22,8 @@ from devloop.statemachine import (
     InvalidTransition,
     transition,
 )
+from devloop.units import build_units
+from devloop.worktree import add_worktree
 
 
 def _cmd_start(args):
@@ -168,6 +171,32 @@ def _cmd_archive(args):
     return 0 if result.ok else 1
 
 
+def _cmd_units_init(args):
+    cp = Checkpoint.load(args.file)
+    meta = load_change_meta(args.meta)
+    units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
+    if not units:
+        cp.units = []
+        cp.save(args.file)
+        print("units-init: serial")
+        return 0
+    for u in units:
+        base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
+        add_worktree(args.repo, u["worktree"], u["branch"], base)
+    cp.units = units
+    cp.save(args.file)
+    print("units-init: %d units" % len(units))
+    return 0
+
+
+def _branch_exists(repo, branch):
+    r = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", branch],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -231,6 +260,13 @@ def build_parser():
     p_archive = sub.add_parser("archive")
     p_archive.add_argument("--file", required=True)
     p_archive.set_defaults(func=_cmd_archive)
+
+    p_ui = sub.add_parser("units-init")
+    p_ui.add_argument("--file", required=True)
+    p_ui.add_argument("--repo", required=True)
+    p_ui.add_argument("--meta", required=True)
+    p_ui.add_argument("--wt-root", dest="wt_root", required=True)
+    p_ui.set_defaults(func=_cmd_units_init)
 
     return parser
 

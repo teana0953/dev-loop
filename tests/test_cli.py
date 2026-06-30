@@ -1,4 +1,6 @@
 import os
+import subprocess
+from pathlib import Path
 
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
@@ -436,3 +438,51 @@ def test_status_shows_change_id_and_branch(tmp_path, capsys):
     # 向後相容
     assert "phase=review" in out
     assert "iteration=2" in out
+
+
+# ---------------------------------------------------------------------------
+# units-init helpers
+# ---------------------------------------------------------------------------
+
+def _git(repo, *a):
+    subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True)
+
+
+def _repo(tmp_path):
+    r = tmp_path / "repo"; r.mkdir()
+    _git(r, "init", "-b", "main"); _git(r, "config", "user.email", "t@t")
+    _git(r, "config", "user.name", "t")
+    (r / "base.txt").write_text("x\n"); _git(r, "add", "."); _git(r, "commit", "-m", "init")
+    return r
+
+
+def test_units_init_creates_worktrees(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"], "files_hint": ["a/"]},
+        {"id": "g2", "tasks": ["2"], "files_hint": ["b/"]},
+    ]}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [u["id"] for u in cp.units] == ["g1", "g2"]
+    assert (repo / ".devloop/wt/g1").exists()
+    assert cp.units[0]["status"] == "pending"
+
+
+def test_units_init_serial_no_worktrees(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": []}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).units == []
