@@ -734,3 +734,27 @@ def test_unit_claim_unknown_id(tmp_path):
     Checkpoint(phase="apply", change_id="c", branch="b",
                units=[{"id": "g1", "status": "pending"}]).save(cp_path)
     assert main(["unit-claim", "--file", str(cp_path), "--id", "zzz"]) == 2
+
+
+def test_qa_pass_advances_to_review(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b", iteration=1).save(cp_path)
+    report = tmp_path / "qa.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "behavior", "note": "slow"}]}), encoding="utf-8")
+    rc = main(["qa", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "review"
+    assert "slow" in cp.non_blocking
+
+
+def test_qa_fail_goes_to_fix(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b", iteration=1).save(cp_path)
+    report = tmp_path / "qa.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "behavior", "note": "crash"}]}), encoding="utf-8")
+    rc = main(["qa", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).phase == "fix"
