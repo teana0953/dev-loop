@@ -49,6 +49,11 @@ Claude 會依流程跑:brainstorm ✋ → OpenSpec propose → validate ✋ → 
 | `arm-local [--exec "<cmd>"] [--heartbeat N]` | 確保有且僅一個 detached watcher(idempotent) |
 | `resume [--reset-at <ISO>]` | 回報 ready / sleep_seconds / phase |
 | `auto-resume --reset-at <ISO> --exec "<cmd>"` | 本機等到 reset 後執行續跑命令(進階:精準睡) |
+| `units-init --repo <r> --meta <json> --wt-root <d>` | 依平行群建 worktree + 寫 units |
+| `unit-done --id <gid>` | 標記平行單元完成 |
+| `units-merge --repo <r>` | 依序合並 unit 分支;衝突標記退串行 |
+| `units-cleanup --repo <r>` | 移除 merged + 孤兒 worktree |
+| `units-status` | 印各單元狀態 + pending 清單(續跑用) |
 
 review 報告格式:
 ```json
