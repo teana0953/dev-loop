@@ -578,3 +578,36 @@ def test_units_cleanup_removes_orphan(tmp_path):
     rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo)])
     assert rc == 0
     assert not orphan.exists()
+
+
+# ---------------------------------------------------------------------------
+# units-status tests
+# ---------------------------------------------------------------------------
+
+import io
+from contextlib import redirect_stdout
+
+
+def test_units_status_lists_pending(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b", units=[
+        {"id": "g1", "status": "merged"},
+        {"id": "g2", "status": "pending"},
+        {"id": "g3", "status": "in_progress"},
+    ]).save(cp_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["units-status", "--file", str(cp_path)])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "pending: g2,g3" in out
+
+
+def test_units_status_none_pending(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "merged"}]).save(cp_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["units-status", "--file", str(cp_path)])
+    assert "pending: -" in buf.getvalue()

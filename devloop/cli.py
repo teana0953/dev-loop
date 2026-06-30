@@ -22,7 +22,7 @@ from devloop.statemachine import (
     InvalidTransition,
     transition,
 )
-from devloop.units import build_units, mark
+from devloop.units import build_units, mark, pending_units
 from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths
 
 
@@ -248,6 +248,15 @@ def _cmd_units_cleanup(args):
     return 0
 
 
+def _cmd_units_status(args):
+    cp = Checkpoint.load(args.file)
+    for u in cp.units:
+        print("%s %s" % (u["id"], u["status"]))
+    pend = [u["id"] for u in pending_units(cp.units)]
+    print("pending: %s" % (",".join(pend) if pend else "-"))
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -333,6 +342,10 @@ def build_parser():
     p_uc.add_argument("--file", required=True)
     p_uc.add_argument("--repo", required=True)
     p_uc.set_defaults(func=_cmd_units_cleanup)
+
+    p_us = sub.add_parser("units-status")
+    p_us.add_argument("--file", required=True)
+    p_us.set_defaults(func=_cmd_units_status)
 
     return parser
 
