@@ -50,6 +50,14 @@ def parse_review_report(path):
     return data["findings"]
 
 
+def aggregate_findings(report_paths):
+    """把多個 review 報告的 findings 串接成單一 list(供 code+uiux legs 彙總)。"""
+    merged = []
+    for path in report_paths:
+        merged.extend(parse_review_report(path))
+    return merged
+
+
 def classify_qa(findings):
     """QA 報告分類:任一 blocking → QA_FAIL;否則 QA_PASS。"""
     if any(f.get("severity") == "blocking" for f in findings):

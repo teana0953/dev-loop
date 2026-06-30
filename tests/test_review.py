@@ -83,3 +83,22 @@ def test_classify_proposal_blocking_design_takes_precedence():
         {"severity": "blocking", "level": "design", "note": "wrong approach"},
     ]
     assert classify_proposal(findings) == PROPOSE_BLOCKING_DESIGN
+
+
+def test_aggregate_findings_concatenates(tmp_path):
+    from devloop.review import aggregate_findings
+
+    p1 = tmp_path / "code.json"
+    p1.write_text(json.dumps({"findings": [{"severity": "blocking", "level": "code", "note": "bug"}]}), encoding="utf-8")
+    p2 = tmp_path / "uiux.json"
+    p2.write_text(json.dumps({"findings": [{"severity": "non_blocking", "level": "code", "note": "spacing"}]}), encoding="utf-8")
+    merged = aggregate_findings([str(p1), str(p2)])
+    assert len(merged) == 2
+    assert merged[0]["note"] == "bug"
+    assert merged[1]["note"] == "spacing"
+
+
+def test_aggregate_findings_empty():
+    from devloop.review import aggregate_findings
+
+    assert aggregate_findings([]) == []
