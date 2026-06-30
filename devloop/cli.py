@@ -23,6 +23,7 @@ from devloop.statemachine import (
     GATE_PASS,
     DEFAULT_MAX_ITERATIONS,
     InvalidTransition,
+    PHASES,
     transition,
 )
 from devloop.units import build_units, mark, pending_units
@@ -93,6 +94,9 @@ def _cmd_resume(args):
 def _cmd_review(args):
     cp = Checkpoint.load(args.file)
     if args.from_legs:
+        if not cp.review_legs or any(l["status"] != "collected" for l in cp.review_legs):
+            print("error: review legs not all collected", file=sys.stderr)
+            return 2
         paths = [l["report"] for l in cp.review_legs if l["status"] == "collected"]
         findings = aggregate_findings(paths)
     elif args.report:
@@ -355,7 +359,7 @@ def build_parser():
     p_start.add_argument("--change-id", required=True, dest="change_id")
     p_start.add_argument("--branch", required=True)
     p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
-    p_start.add_argument("--phase", default="apply")
+    p_start.add_argument("--phase", default="apply", choices=PHASES)
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status")

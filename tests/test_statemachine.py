@@ -79,3 +79,8 @@ def test_proposal_review_blocking_proposal_to_propose():
 
 def test_proposal_review_blocking_design_escalates():
     assert transition("proposal_review", 0, PROPOSE_BLOCKING_DESIGN) == ("escalated", 0)
+
+
+def test_qa_invalid_event_raises():
+    with pytest.raises(InvalidTransition):
+        transition("qa", 1, GATE_PASS)

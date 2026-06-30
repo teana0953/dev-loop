@@ -847,3 +847,30 @@ def test_review_requires_report_or_legs(tmp_path):
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(cp_path)
     assert main(["review", "--file", str(cp_path)]) == 2
+
+
+def test_review_from_legs_incomplete_fails(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    code_rep = tmp_path / "code.json"
+    code_rep.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "code", "note": "nit"}]}), encoding="utf-8")
+    cp = Checkpoint(phase="review", change_id="c", branch="b", iteration=1)
+    cp.review_legs = [
+        {"kind": "code", "status": "collected", "report": str(code_rep)},
+        {"kind": "uiux", "status": "pending", "report": ""},
+    ]
+    cp.save(cp_path)
+    rc = main(["review", "--file", str(cp_path), "--from-legs"])
+    assert rc == 2
+    assert capsys.readouterr().err != ""
+    # checkpoint phase must remain unchanged
+    assert Checkpoint.load(cp_path).phase == "review"
+
+
+def test_start_invalid_phase_rejected(tmp_path):
+    import pytest
+    cp_path = tmp_path / "cp.json"
+    with pytest.raises(SystemExit) as exc_info:
+        main(["start", "--file", str(cp_path), "--change-id", "c",
+              "--branch", "loop/x", "--phase", "invalid_phase"])
+    assert exc_info.value.code == 2
