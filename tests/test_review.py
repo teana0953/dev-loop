@@ -1,7 +1,10 @@
 import json
 
-from devloop.review import classify, classify_qa, non_blocking_notes, parse_review_report
+from devloop.review import classify, classify_proposal, classify_qa, non_blocking_notes, parse_review_report
 from devloop.statemachine import (
+    PROPOSE_BLOCKING_DESIGN,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_CLEAN,
     QA_FAIL,
     QA_PASS,
     REVIEW_BLOCKING_CODE,
@@ -63,3 +66,20 @@ def test_classify_qa_no_blocking_passes():
 
 def test_classify_qa_empty_passes():
     assert classify_qa([]) == QA_PASS
+
+
+def test_classify_proposal_clean():
+    assert classify_proposal([{"severity": "non_blocking", "level": "proposal", "note": "x"}]) == PROPOSE_CLEAN
+
+
+def test_classify_proposal_blocking_proposal():
+    findings = [{"severity": "blocking", "level": "proposal", "note": "scope too big"}]
+    assert classify_proposal(findings) == PROPOSE_BLOCKING_PROPOSAL
+
+
+def test_classify_proposal_blocking_design_takes_precedence():
+    findings = [
+        {"severity": "blocking", "level": "proposal", "note": "x"},
+        {"severity": "blocking", "level": "design", "note": "wrong approach"},
+    ]
+    assert classify_proposal(findings) == PROPOSE_BLOCKING_DESIGN

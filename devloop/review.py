@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 from devloop.statemachine import (
+    PROPOSE_BLOCKING_DESIGN,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_CLEAN,
     QA_FAIL,
     QA_PASS,
     REVIEW_BLOCKING_CODE,
@@ -24,6 +27,17 @@ def classify(findings):
     if any(f.get("level") == "proposal" for f in blocking):
         return REVIEW_BLOCKING_PROPOSAL
     return REVIEW_BLOCKING_CODE
+
+
+def classify_proposal(findings):
+    """Proposal review 分類:design 層 blocking 優先 → 升級;
+    proposal 層 blocking → 回 propose;無 blocking → clean。"""
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    if not blocking:
+        return PROPOSE_CLEAN
+    if any(f.get("level") == "design" for f in blocking):
+        return PROPOSE_BLOCKING_DESIGN
+    return PROPOSE_BLOCKING_PROPOSAL
 
 
 def non_blocking_notes(findings):
