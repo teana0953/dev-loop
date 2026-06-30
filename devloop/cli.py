@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
+from devloop.changemeta import is_serial, load_change_meta
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
@@ -21,6 +22,8 @@ from devloop.statemachine import (
     InvalidTransition,
     transition,
 )
+from devloop.units import build_units, mark, pending_units
+from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths
 
 
 def _cmd_start(args):
@@ -168,6 +171,97 @@ def _cmd_archive(args):
     return 0 if result.ok else 1
 
 
+def _cmd_units_init(args):
+    cp = Checkpoint.load(args.file)
+    meta = load_change_meta(args.meta)
+    if is_serial(meta):
+        cp.units = []
+        cp.save(args.file)
+        print("units-init: serial")
+        return 0
+    units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
+    base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
+    for u in units:
+        add_worktree(args.repo, u["worktree"], u["branch"], base)
+    cp.units = units
+    cp.save(args.file)
+    print("units-init: %d units" % len(units))
+    return 0
+
+
+def _branch_exists(repo, branch):
+    r = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", branch],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0
+
+
+def _cmd_unit_done(args):
+    cp = Checkpoint.load(args.file)
+    try:
+        mark(cp.units, args.id, "done")
+    except KeyError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    cp.save(args.file)
+    print("unit-done: %s" % args.id)
+    return 0
+
+
+def _cmd_units_merge(args):
+    cp = Checkpoint.load(args.file)
+    co = subprocess.run(["git", "-C", str(args.repo), "checkout", cp.branch],
+                        capture_output=True, text=True)
+    if co.returncode != 0:
+        print("error: git checkout %s failed: %s" % (cp.branch, co.stderr.strip()),
+              file=sys.stderr)
+        return 2
+    conflicts = []
+    for u in cp.units:
+        if u["status"] != "done":
+            continue
+        res = merge_branch(args.repo, u["branch"])
+        u["status"] = "merged" if res.ok else "conflict"
+        if not res.ok:
+            conflicts.append(u["id"])
+    cp.save(args.file)
+    if conflicts:
+        print("units-merge: conflict in %s" % ", ".join(conflicts))
+        return 1
+    print("units-merge: all merged")
+    return 0
+
+
+def _cmd_units_cleanup(args):
+    cp = Checkpoint.load(args.file)
+    wt_root = str(Path(args.wt_root).resolve()) + os.sep
+    removed = 0
+    known = set()
+    for u in cp.units:
+        known.add(str(Path(u["worktree"]).resolve()))
+        if u["status"] == "merged":
+            remove_worktree(args.repo, u["worktree"], u["branch"])
+            removed += 1
+    for p in list_worktree_paths(args.repo):
+        if p not in known and p.startswith(wt_root):
+            subprocess.run(["git", "-C", str(args.repo), "worktree", "remove", "--force", p],
+                           capture_output=True, text=True)
+            removed += 1
+    cp.save(args.file)
+    print("units-cleanup: removed %d" % removed)
+    return 0
+
+
+def _cmd_units_status(args):
+    cp = Checkpoint.load(args.file)
+    for u in cp.units:
+        print("%s %s" % (u["id"], u["status"]))
+    pend = [u["id"] for u in pending_units(cp.units)]
+    print("pending: %s" % (",".join(pend) if pend else "-"))
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -231,6 +325,33 @@ def build_parser():
     p_archive = sub.add_parser("archive")
     p_archive.add_argument("--file", required=True)
     p_archive.set_defaults(func=_cmd_archive)
+
+    p_ui = sub.add_parser("units-init")
+    p_ui.add_argument("--file", required=True)
+    p_ui.add_argument("--repo", required=True)
+    p_ui.add_argument("--meta", required=True)
+    p_ui.add_argument("--wt-root", dest="wt_root", required=True)
+    p_ui.set_defaults(func=_cmd_units_init)
+
+    p_ud = sub.add_parser("unit-done")
+    p_ud.add_argument("--file", required=True)
+    p_ud.add_argument("--id", required=True)
+    p_ud.set_defaults(func=_cmd_unit_done)
+
+    p_um = sub.add_parser("units-merge")
+    p_um.add_argument("--file", required=True)
+    p_um.add_argument("--repo", required=True)
+    p_um.set_defaults(func=_cmd_units_merge)
+
+    p_uc = sub.add_parser("units-cleanup")
+    p_uc.add_argument("--file", required=True)
+    p_uc.add_argument("--repo", required=True)
+    p_uc.add_argument("--wt-root", dest="wt_root", required=True)
+    p_uc.set_defaults(func=_cmd_units_cleanup)
+
+    p_us = sub.add_parser("units-status")
+    p_us.add_argument("--file", required=True)
+    p_us.set_defaults(func=_cmd_units_status)
 
     return parser
 

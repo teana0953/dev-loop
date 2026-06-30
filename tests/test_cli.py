@@ -1,4 +1,6 @@
 import os
+import subprocess
+from pathlib import Path
 
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
@@ -436,3 +438,235 @@ def test_status_shows_change_id_and_branch(tmp_path, capsys):
     # 向後相容
     assert "phase=review" in out
     assert "iteration=2" in out
+
+
+# ---------------------------------------------------------------------------
+# units-init helpers
+# ---------------------------------------------------------------------------
+
+def _git(repo, *a):
+    subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True)
+
+
+def _repo(tmp_path):
+    r = tmp_path / "repo"; r.mkdir()
+    _git(r, "init", "-b", "main"); _git(r, "config", "user.email", "t@t")
+    _git(r, "config", "user.name", "t")
+    (r / "base.txt").write_text("x\n"); _git(r, "add", "."); _git(r, "commit", "-m", "init")
+    return r
+
+
+def test_units_init_creates_worktrees(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"], "files_hint": ["a/"]},
+        {"id": "g2", "tasks": ["2"], "files_hint": ["b/"]},
+    ]}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [u["id"] for u in cp.units] == ["g1", "g2"]
+    assert (repo / ".devloop/wt/g1").exists()
+    assert cp.units[0]["status"] == "pending"
+
+
+def test_units_init_serial_no_worktrees(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": []}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).units == []
+
+
+def test_units_init_single_group_is_serial(tmp_path, capsys):
+    # Exactly ONE parallel_group still counts as serial — no worktrees created.
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"], "files_hint": ["a/"]},
+    ]}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units == []
+    assert not (repo / ".devloop/wt").exists()
+    out = capsys.readouterr().out
+    assert "serial" in out
+
+
+def test_unit_done_marks_done(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"},
+                      {"id": "g2", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-done", "--file", str(cp_path), "--id", "g1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units[0]["status"] == "done"
+    assert cp.units[1]["status"] == "pending"
+
+
+def test_unit_done_unknown_id(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-done", "--file", str(cp_path), "--id", "zzz"])
+    assert rc == 2
+
+
+def test_units_merge_success(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    # 手動建兩個不衝突的 unit 分支
+    for gid, fname in (("g1", "g1.txt"), ("g2", "g2.txt")):
+        wt = repo / (".devloop/wt/" + gid)
+        from devloop.worktree import add_worktree
+        add_worktree(repo, wt, "loop/x-" + gid, "loop/x")
+        (wt / fname).write_text(gid + "\n")
+        _git(wt, "add", "."); _git(wt, "commit", "-m", gid)
+    cp = Checkpoint.load(cp_path)
+    cp.units = [
+        {"id": "g1", "worktree": str(repo / ".devloop/wt/g1"), "branch": "loop/x-g1", "status": "done"},
+        {"id": "g2", "worktree": str(repo / ".devloop/wt/g2"), "branch": "loop/x-g2", "status": "done"},
+    ]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert all(u["status"] == "merged" for u in cp.units)
+    assert (repo / "g1.txt").exists() and (repo / "g2.txt").exists()
+
+
+def test_units_merge_conflict_marks_unit(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    (wt / "base.txt").write_text("g1\n"); _git(wt, "add", "."); _git(wt, "commit", "-m", "g1")
+    # 短命分支也改 base.txt → 衝突
+    (repo / "base.txt").write_text("main\n"); _git(repo, "add", "."); _git(repo, "commit", "-m", "main")
+    cp = Checkpoint.load(cp_path)
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "done"}]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 1
+    assert Checkpoint.load(cp_path).units[0]["status"] == "conflict"
+
+
+def test_units_merge_checkout_failure_aborts(tmp_path):
+    # If checkout to cp.branch fails, abort without merging or mutating unit statuses.
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    # Use a branch name that does not exist
+    Checkpoint(phase="apply", change_id="c", branch="nonexistent/branch").save(cp_path)
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    (wt / "g1.txt").write_text("g1\n")
+    _git(wt, "add", "."); _git(wt, "commit", "-m", "g1")
+    cp = Checkpoint.load(cp_path)
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "done"}]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 2
+    # unit status must remain unchanged ("done"), not "merged" or "conflict"
+    assert Checkpoint.load(cp_path).units[0]["status"] == "done"
+
+
+def test_units_cleanup_removes_merged(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="loop/x")
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "merged"}]
+    cp.save(cp_path)
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    assert not wt.exists()
+
+
+def test_units_cleanup_removes_orphan(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    orphan = repo / ".devloop/wt/ghost"
+    add_worktree(repo, orphan, "loop/x-ghost", "loop/x")  # checkpoint 不記
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x", units=[]).save(cp_path)
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    assert not orphan.exists()
+
+
+def test_units_cleanup_keeps_out_of_scope_worktree(tmp_path):
+    # Worktrees outside wt_root must NOT be removed.
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    external = tmp_path / "external"
+    add_worktree(repo, external, "loop/x-ext", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x", units=[]).save(cp_path)
+    wt_root = repo / ".devloop/wt"
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(wt_root)])
+    assert rc == 0
+    assert external.exists()  # external worktree was NOT removed
+
+
+# ---------------------------------------------------------------------------
+# units-status tests
+# ---------------------------------------------------------------------------
+
+import io
+from contextlib import redirect_stdout
+
+
+def test_units_status_lists_pending(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b", units=[
+        {"id": "g1", "status": "merged"},
+        {"id": "g2", "status": "pending"},
+        {"id": "g3", "status": "in_progress"},
+    ]).save(cp_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["units-status", "--file", str(cp_path)])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "pending: g2,g3" in out
+
+
+def test_units_status_none_pending(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "merged"}]).save(cp_path)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["units-status", "--file", str(cp_path)])
+    assert "pending: -" in buf.getvalue()
