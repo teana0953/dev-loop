@@ -61,6 +61,7 @@ Claude 會依流程跑:brainstorm ✋ → OpenSpec propose → validate ✋ → 
 | `legs-init --kinds code,uiux` | 初始化唯讀型平行 review legs |
 | `leg-done --kind <k> --report <p>` | 回收某 leg 報告 |
 | `review --from-legs` | 彙總所有 collected legs 報告後分級 |
+| `finish --config <c> --meta <m> --followup <f>` | 依 config/meta 決策 merge\|pr\|ask + 落 follow-up |
 
 review 報告格式:
 ```json

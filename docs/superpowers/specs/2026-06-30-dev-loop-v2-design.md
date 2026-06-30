@@ -76,6 +76,8 @@
       └ ask/未設 → ✋ 問人工選 merge 或 pr
 ```
 
+> 註:design 層 blocking 在引擎實作為 `PROPOSE_BLOCKING_DESIGN → escalated`(escalated 即「停下升級給人工」狀態)。brainstorm 無 inbound auto-transition(設計上由人工驅動),故「回 brainstorm」由人工在升級後手動發起,而非引擎自動轉移。
+
 **關鍵語義**:
 - **兩道 review 都自動修到乾淨**:Proposal Review 自動回 propose 修;Review(code/uiux)的 code 層 blocking 回 fix。兩者都有逃生門(發現是上游層級問題則回 propose/brainstorm)。
 - **fix 後重跑順序**:`Hard Gate → QA → Review`,確保改完不破壞行為。
