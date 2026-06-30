@@ -14,7 +14,7 @@ from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
 from devloop.resume import plan_resume
-from devloop.review import classify, classify_qa, non_blocking_notes, parse_review_report
+from devloop.review import classify, classify_proposal, classify_qa, non_blocking_notes, parse_review_report
 from devloop.statemachine import (
     GATE_FAIL,
     GATE_PASS,
@@ -103,6 +103,17 @@ def _cmd_qa(args):
     findings = parse_review_report(args.report)
     cp.non_blocking.extend(non_blocking_notes(findings))
     event = classify_qa(findings)
+    cp = _apply_event(cp, event, args.max)
+    cp.save(args.file)
+    print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+    return 0
+
+
+def _cmd_proposal_review(args):
+    cp = Checkpoint.load(args.file)
+    findings = parse_review_report(args.report)
+    cp.non_blocking.extend(non_blocking_notes(findings))
+    event = classify_proposal(findings)
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
@@ -348,6 +359,12 @@ def build_parser():
     p_qa.add_argument("--report", required=True)
     p_qa.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_qa.set_defaults(func=_cmd_qa)
+
+    p_pr = sub.add_parser("proposal-review")
+    p_pr.add_argument("--file", required=True)
+    p_pr.add_argument("--report", required=True)
+    p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_pr.set_defaults(func=_cmd_proposal_review)
 
     p_auto = sub.add_parser("auto-resume")
     p_auto.add_argument("--file", required=True)

@@ -772,3 +772,26 @@ def test_start_defaults_phase_apply(tmp_path):
     cp_path = tmp_path / "cp.json"
     main(["start", "--file", str(cp_path), "--change-id", "c", "--branch", "loop/x"])
     assert Checkpoint.load(cp_path).phase == "apply"
+
+
+def test_proposal_review_clean_advances_to_apply(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b").save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "proposal", "note": "minor"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "apply"
+    assert "minor" in cp.non_blocking
+
+
+def test_proposal_review_blocking_design_escalates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b").save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "design", "note": "wrong approach"}]}), encoding="utf-8")
+    main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert Checkpoint.load(cp_path).phase == "escalated"
