@@ -874,3 +874,60 @@ def test_start_invalid_phase_rejected(tmp_path):
         main(["start", "--file", str(cp_path), "--change-id", "c",
               "--branch", "loop/x", "--phase", "invalid_phase"])
     assert exc_info.value.code == 2
+
+
+def test_finish_merge_writes_followup(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b",
+               non_blocking=["rename x"]).save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    followup = tmp_path / "followup.md"
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(followup)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "finish: merge" in out
+    assert "- rename x" in followup.read_text(encoding="utf-8")
+
+
+def test_finish_pr_prints_body(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b",
+               non_blocking=["polish ui"]).save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "pr"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "finish: pr" in out
+    assert "- polish ui" in out
+
+
+def test_finish_defaults_to_ask(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"   # 不建立(不存在 → 預設)
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 0
+    assert "finish: ask" in capsys.readouterr().out
+
+
+def test_finish_meta_overrides_config(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({"finish": "pr"}), encoding="utf-8")
+    main(["finish", "--file", str(cp_path), "--config", str(cfg),
+          "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert "finish: pr" in capsys.readouterr().out
