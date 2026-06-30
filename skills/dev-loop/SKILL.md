@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec propose → apply+TDD(Sonnet)→ Opus subagent review/re-review → 自動 merge 回 trunk。只在批准設計、批准提案、超過輪數升級三處需人工。
+description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec propose → proposal-review(Opus) → apply+TDD(Sonnet)→ hard gate → QA gate → Opus subagent review(legs) → 自動 merge 回 trunk。只在批准設計、批准提案(proposal-review clean 後)、超過輪數升級三處需人工。
 ---
 
 # Dev-Loop
@@ -10,32 +10,56 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 ## 設定
 
 - `trigger`:token 用罄續跑的觸發 adapter。`local`(預設,detached watcher)或 `harness`(用 ScheduleWakeup 原生排程)。見「Token 用罄續跑」。
+- `finish`:收尾策略 `merge`|`pr`|`ask`(未設等同 `ask`);可被 `.devloop/changes/<id>.json` 的 `finish` override。
 
 ## 流程
 
 1. **Brainstorm(Opus)**:用 `/brainstorming` 產出設計文件。✋ 等使用者批准。
 2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
-3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>"`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。**啟動後立即 arm 觸發器**(見「每個 checkpoint 後 arm」)。✋ 驗證通過後等使用者批准提案。
-4. **Apply(Sonnet · TDD)**:逐 task red→green→refactor。完成後 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event apply_done`。
-5. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>"`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
-   - exit 0 → 階段已進到 review。
-   - exit 1 → 階段已進到 fix,回步驟 7。
-6. **Review(Opus subagent,冷啟動)**:輸入 diff + OpenSpec proposal(真相來源)+ 測試報告 + 前次 review 報告;產出 review 報告 JSON(`findings[]`,severity ∈ blocking/non_blocking,level ∈ code/proposal)。
-   - 產出 review 報告 JSON 後執行:`python3 -m devloop.cli review --file .devloop/checkpoint.json --report <report.json>`,引擎會分級、累積 non-blocking、並依結果前進到 merge / fix / propose。
-     - `review_no_blocking` → merge(步驟 8)
-     - `review_blocking_code` → fix(步驟 7)
-     - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
+3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。**啟動後立即 arm 觸發器**(見「每個 checkpoint 後 arm」)。
+4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
+   `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json>`
+   - clean → phase=apply;✋ 此時等使用者批准提案。
+   - blocking(proposal)→ phase=propose,自動重新 propose 後再 proposal-review(計數,上限 N)。
+   - blocking(design)→ escalated,✋ 回 brainstorm 升級。
+5. **Apply(Sonnet · TDD)**:
+   - **判斷平行**:讀 `.devloop/changes/<change-id>.json` 的 `parallel_groups`。
+   - **串行**(0 或 1 群):逐 task red→green→refactor(同 v1)。
+   - **平行**(≥2 群):
+     1. `python3 -m devloop.cli units-init --file .devloop/checkpoint.json --repo . --meta .devloop/changes/<id>.json --wt-root .devloop/wt`
+     2. 對每個 unit,dispatch 一個 Sonnet subagent 在其 `worktree` 上做該群 tasks(TDD);完成後該 subagent 回報,主編排呼叫 `unit-done --id <gid>`。
+     3. 全部 done 後:`units-merge --file ... --repo .`。exit 1(衝突)→ 對 conflict 的 unit **退串行**:在最新短命分支 HEAD 重做該群 tasks;衝突 unit 在短命分支重做後 `unit-resolve --id <gid>`(標 merged + 清 worktree),再續 `units-merge`。
+     4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
+   - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
+   - 完成後 `event --event apply_done`。
+6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>"`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
+   - exit 0 → 階段已進到 qa。
+   - exit 1 → 階段已進到 fix,回步驟 9。
+7. **QA Gate(QA subagent;可多情境平行)**:gate 全綠後 phase=qa。subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
+   `python3 -m devloop.cli qa --file .devloop/checkpoint.json --report <qa.json>`
+   - pass → review;blocking → fix。
+8. **Review(code ‖ uiux 平行 legs)**:`legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code=Opus、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
+   - `review_no_blocking` → merge(步驟 10)
+   - `review_blocking_code` → fix(步驟 9)
+   - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
    - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者。
-7. **Fix**:機械性 → Sonnet;架構性 → Opus。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 5。
-8. **Merge & Archive(自動)**:短命分支 merge 回 trunk →`python3 -m devloop.cli archive --file .devloop/checkpoint.json`(歸檔 change、同步 main specs)→ 將 checkpoint 累積的 non-blocking 項落成 follow-up。
+9. **Fix**:機械性 → Sonnet;架構性 → Opus。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
+10. **收尾(finish 決策驅動)**:review 無 blocking 進入 merge phase 後,先問引擎決策:
+   `python3 -m devloop.cli finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
+   - stdout `finish: merge` → 短命分支 merge 回 trunk → `python3 -m devloop.cli archive --file .devloop/checkpoint.json`;`followup: <path>` 指出已落地的 non-blocking follow-up 檔。
+   - stdout `finish: pr` → `archive`(commit change 移檔)→ push 分支 → `gh pr create`(PR body 放入 `--- PR body follow-up ---` 之後印出的內容)→ 等人 review/合並。
+   - stdout `finish: ask` → ✋ 停下問使用者選 merge 或 pr,再依上述對應路徑執行(選定後務必重跑 `finish` 以落地 follow-up)。
+   - 上述 git 操作(merge/archive 或開 PR)實際完成後,呼叫 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event finish_done` 推進 `merge → done`(終態)。
 
 ## 每個 checkpoint 後 arm
 
-每個會寫 checkpoint 的點(`start`、`event`、`gate`、`review`)之後,**確保續跑觸發器在位**——這是 token 用罄前的事前部署,缺它續跑就不會啟動。依 `trigger` 設定:
+每個會寫 checkpoint 的點(`start`、`event`、`gate`、`proposal-review`、`qa`、`leg-done`、`review`)之後,**確保續跑觸發器在位**——這是 token 用罄前的事前部署,缺它續跑就不會啟動。依 `trigger` 設定:
 
 - `trigger=local`(預設):`python3 -m devloop.cli arm-local --file .devloop/checkpoint.json`
   - idempotent:watcher 已存活則 no-op,死了自癒重生。需 checkpoint 已有 `resume_exec`(於 `start` 帶入)。
 - `trigger=harness`:呼叫 `ScheduleWakeup`(一次性,故每 checkpoint 刷新一個),fire 時冷啟動跑續跑命令(如 `/dev-loop resume`)。
+
+`units-init`/`unit-done`/`units-merge` 之後同樣要確保觸發器在位(它們都寫 checkpoint)。
 
 ## Token 用罄續跑
 
