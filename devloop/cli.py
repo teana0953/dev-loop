@@ -14,21 +14,25 @@ from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
 from devloop.resume import plan_resume
-from devloop.review import classify, non_blocking_notes, parse_review_report
+from devloop.review import (
+    aggregate_findings, classify, classify_proposal, classify_qa,
+    non_blocking_notes, parse_review_report,
+)
 from devloop.statemachine import (
     GATE_FAIL,
     GATE_PASS,
     DEFAULT_MAX_ITERATIONS,
     InvalidTransition,
+    PHASES,
     transition,
 )
 from devloop.units import build_units, mark, pending_units
-from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths
+from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths, worktree_exists
 
 
 def _cmd_start(args):
     cp = Checkpoint(
-        phase="apply",
+        phase=args.phase,
         change_id=args.change_id,
         branch=args.branch,
         resume_exec=args.resume_exec,
@@ -89,13 +93,67 @@ def _cmd_resume(args):
 
 def _cmd_review(args):
     cp = Checkpoint.load(args.file)
-    findings = parse_review_report(args.report)
+    if args.from_legs:
+        if not cp.review_legs or any(l["status"] != "collected" for l in cp.review_legs):
+            print("error: review legs not all collected", file=sys.stderr)
+            return 2
+        paths = [l["report"] for l in cp.review_legs if l["status"] == "collected"]
+        findings = aggregate_findings(paths)
+    elif args.report:
+        findings = parse_review_report(args.report)
+    else:
+        print("error: need --report or --from-legs", file=sys.stderr)
+        return 2
     cp.non_blocking.extend(non_blocking_notes(findings))
     event = classify(findings)
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
+
+
+def _cmd_qa(args):
+    cp = Checkpoint.load(args.file)
+    findings = parse_review_report(args.report)
+    cp.non_blocking.extend(non_blocking_notes(findings))
+    event = classify_qa(findings)
+    cp = _apply_event(cp, event, args.max)
+    cp.save(args.file)
+    print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+    return 0
+
+
+def _cmd_proposal_review(args):
+    cp = Checkpoint.load(args.file)
+    findings = parse_review_report(args.report)
+    cp.non_blocking.extend(non_blocking_notes(findings))
+    event = classify_proposal(findings)
+    cp = _apply_event(cp, event, args.max)
+    cp.save(args.file)
+    print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+    return 0
+
+
+def _cmd_legs_init(args):
+    cp = Checkpoint.load(args.file)
+    kinds = [k for k in args.kinds.split(",") if k]
+    cp.review_legs = [{"kind": k, "status": "pending", "report": ""} for k in kinds]
+    cp.save(args.file)
+    print("legs-init: %d" % len(cp.review_legs))
+    return 0
+
+
+def _cmd_leg_done(args):
+    cp = Checkpoint.load(args.file)
+    for leg in cp.review_legs:
+        if leg["kind"] == args.kind:
+            leg["status"] = "collected"
+            leg["report"] = args.report
+            cp.save(args.file)
+            print("leg-done: %s" % args.kind)
+            return 0
+    print("error: no leg %r" % args.kind, file=sys.stderr)
+    return 2
 
 
 def _cmd_auto_resume(args):
@@ -182,7 +240,8 @@ def _cmd_units_init(args):
     units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
     base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
     for u in units:
-        add_worktree(args.repo, u["worktree"], u["branch"], base)
+        if not worktree_exists(args.repo, u["worktree"]):
+            add_worktree(args.repo, u["worktree"], u["branch"], base)
     cp.units = units
     cp.save(args.file)
     print("units-init: %d units" % len(units))
@@ -206,6 +265,18 @@ def _cmd_unit_done(args):
         return 2
     cp.save(args.file)
     print("unit-done: %s" % args.id)
+    return 0
+
+
+def _cmd_unit_claim(args):
+    cp = Checkpoint.load(args.file)
+    try:
+        mark(cp.units, args.id, "in_progress")
+    except KeyError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    cp.save(args.file)
+    print("unit-claim: %s" % args.id)
     return 0
 
 
@@ -253,6 +324,23 @@ def _cmd_units_cleanup(args):
     return 0
 
 
+def _cmd_unit_resolve(args):
+    cp = Checkpoint.load(args.file)
+    target = None
+    for u in cp.units:
+        if u["id"] == args.id:
+            target = u
+            break
+    if target is None:
+        print("error: no unit %r" % args.id, file=sys.stderr)
+        return 2
+    remove_worktree(args.repo, target["worktree"], target["branch"])
+    target["status"] = "merged"
+    cp.save(args.file)
+    print("unit-resolve: %s merged" % args.id)
+    return 0
+
+
 def _cmd_units_status(args):
     cp = Checkpoint.load(args.file)
     for u in cp.units:
@@ -271,6 +359,7 @@ def build_parser():
     p_start.add_argument("--change-id", required=True, dest="change_id")
     p_start.add_argument("--branch", required=True)
     p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
+    p_start.add_argument("--phase", default="apply", choices=PHASES)
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status")
@@ -297,9 +386,33 @@ def build_parser():
 
     p_review = sub.add_parser("review")
     p_review.add_argument("--file", required=True)
-    p_review.add_argument("--report", required=True)
+    p_review.add_argument("--report", default=None)
+    p_review.add_argument("--from-legs", dest="from_legs", action="store_true")
     p_review.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_review.set_defaults(func=_cmd_review)
+
+    p_qa = sub.add_parser("qa")
+    p_qa.add_argument("--file", required=True)
+    p_qa.add_argument("--report", required=True)
+    p_qa.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_qa.set_defaults(func=_cmd_qa)
+
+    p_pr = sub.add_parser("proposal-review")
+    p_pr.add_argument("--file", required=True)
+    p_pr.add_argument("--report", required=True)
+    p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_pr.set_defaults(func=_cmd_proposal_review)
+
+    p_li = sub.add_parser("legs-init")
+    p_li.add_argument("--file", required=True)
+    p_li.add_argument("--kinds", required=True)
+    p_li.set_defaults(func=_cmd_legs_init)
+
+    p_ld = sub.add_parser("leg-done")
+    p_ld.add_argument("--file", required=True)
+    p_ld.add_argument("--kind", required=True)
+    p_ld.add_argument("--report", required=True)
+    p_ld.set_defaults(func=_cmd_leg_done)
 
     p_auto = sub.add_parser("auto-resume")
     p_auto.add_argument("--file", required=True)
@@ -338,6 +451,11 @@ def build_parser():
     p_ud.add_argument("--id", required=True)
     p_ud.set_defaults(func=_cmd_unit_done)
 
+    p_ucl = sub.add_parser("unit-claim")
+    p_ucl.add_argument("--file", required=True)
+    p_ucl.add_argument("--id", required=True)
+    p_ucl.set_defaults(func=_cmd_unit_claim)
+
     p_um = sub.add_parser("units-merge")
     p_um.add_argument("--file", required=True)
     p_um.add_argument("--repo", required=True)
@@ -348,6 +466,12 @@ def build_parser():
     p_uc.add_argument("--repo", required=True)
     p_uc.add_argument("--wt-root", dest="wt_root", required=True)
     p_uc.set_defaults(func=_cmd_units_cleanup)
+
+    p_ur = sub.add_parser("unit-resolve")
+    p_ur.add_argument("--file", required=True)
+    p_ur.add_argument("--repo", required=True)
+    p_ur.add_argument("--id", required=True)
+    p_ur.set_defaults(func=_cmd_unit_resolve)
 
     p_us = sub.add_parser("units-status")
     p_us.add_argument("--file", required=True)

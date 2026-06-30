@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 
 from devloop.statemachine import (
+    PROPOSE_BLOCKING_DESIGN,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_CLEAN,
+    QA_FAIL,
+    QA_PASS,
     REVIEW_BLOCKING_CODE,
     REVIEW_BLOCKING_PROPOSAL,
     REVIEW_NO_BLOCKING,
@@ -24,6 +29,17 @@ def classify(findings):
     return REVIEW_BLOCKING_CODE
 
 
+def classify_proposal(findings):
+    """Proposal review 分類:design 層 blocking 優先 → 升級;
+    proposal 層 blocking → 回 propose;無 blocking → clean。"""
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    if not blocking:
+        return PROPOSE_CLEAN
+    if any(f.get("level") == "design" for f in blocking):
+        return PROPOSE_BLOCKING_DESIGN
+    return PROPOSE_BLOCKING_PROPOSAL
+
+
 def non_blocking_notes(findings):
     """抽出 non-blocking 項的 note 文字供 follow-up。"""
     return [f.get("note", "") for f in findings if f.get("severity") == "non_blocking"]
@@ -32,3 +48,18 @@ def non_blocking_notes(findings):
 def parse_review_report(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return data["findings"]
+
+
+def aggregate_findings(report_paths):
+    """把多個 review 報告的 findings 串接成單一 list(供 code+uiux legs 彙總)。"""
+    merged = []
+    for path in report_paths:
+        merged.extend(parse_review_report(path))
+    return merged
+
+
+def classify_qa(findings):
+    """QA 報告分類:任一 blocking → QA_FAIL;否則 QA_PASS。"""
+    if any(f.get("severity") == "blocking" for f in findings):
+        return QA_FAIL
+    return QA_PASS

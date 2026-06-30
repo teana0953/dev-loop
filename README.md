@@ -51,9 +51,16 @@ Claude 會依流程跑:brainstorm ✋ → OpenSpec propose → validate ✋ → 
 | `auto-resume --reset-at <ISO> --exec "<cmd>"` | 本機等到 reset 後執行續跑命令(進階:精準睡) |
 | `units-init --repo <r> --meta <json> --wt-root <d>` | 依平行群建 worktree + 寫 units |
 | `unit-done --id <gid>` | 標記平行單元完成 |
+| `unit-claim --id <gid>` | 標記平行單元 in_progress |
+| `unit-resolve --repo <r> --id <gid>` | 衝突 unit 退串行收尾(標 merged + 清 worktree) |
 | `units-merge --repo <r>` | 依序合並 unit 分支;衝突標記退串行 |
 | `units-cleanup --repo <r>` | 移除 merged + 孤兒 worktree |
 | `units-status` | 印各單元狀態 + pending 清單(續跑用) |
+| `proposal-review --report <json>` | 提案 review 分級(clean→apply / proposal→propose / design→escalated) |
+| `qa --report <json>` | QA 行為驗證分級(pass→review / blocking→fix) |
+| `legs-init --kinds code,uiux` | 初始化唯讀型平行 review legs |
+| `leg-done --kind <k> --report <p>` | 回收某 leg 報告 |
+| `review --from-legs` | 彙總所有 collected legs 報告後分級 |
 
 review 報告格式:
 ```json

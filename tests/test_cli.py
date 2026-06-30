@@ -57,7 +57,7 @@ def test_event_gate_pass_increments_iteration(tmp_path):
     Checkpoint(phase="gate", change_id="c", branch="b", iteration=0).save(f)
     main(["event", "--file", str(f), "--event", "gate_pass"])
     cp = Checkpoint.load(f)
-    assert cp.phase == "review"
+    assert cp.phase == "qa"
     assert cp.iteration == 1
 
 
@@ -71,10 +71,10 @@ def test_event_escalates_when_over_limit(tmp_path):
 def test_gate_subcommand_exit_code(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b").save(f)
-    # 全綠 gate → exit 0 且階段前進到 review
+    # 全綠 gate → exit 0 且階段前進到 qa(內圈 gate→qa→review)
     code = main(["gate", "--file", str(f), "--cmd", "true"])
     assert code == 0
-    assert Checkpoint.load(f).phase == "review"
+    assert Checkpoint.load(f).phase == "qa"
 
 
 def test_gate_subcommand_failure_routes_to_fix(tmp_path):
@@ -91,7 +91,7 @@ def test_gate_supports_multiword_commands(tmp_path):
     # 多字詞命令(如真實的 `pytest tests/`)須被正確切分為 argv,而非當成單一執行檔
     code = main(["gate", "--file", str(f), "--cmd", "sh -c 'exit 0'"])
     assert code == 0
-    assert Checkpoint.load(f).phase == "review"
+    assert Checkpoint.load(f).phase == "qa"
 
 
 from datetime import timezone, datetime, timedelta
@@ -670,3 +670,207 @@ def test_units_status_none_pending(tmp_path):
     with redirect_stdout(buf):
         rc = main(["units-status", "--file", str(cp_path)])
     assert "pending: -" in buf.getvalue()
+
+
+def test_unit_resolve_marks_merged_and_removes_worktree(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="loop/x")
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "conflict"}]
+    cp.save(cp_path)
+    rc = main(["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "g1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units[0]["status"] == "merged"
+    assert not wt.exists()
+
+
+def test_unit_resolve_unknown_id(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "conflict"}]).save(cp_path)
+    rc = main(["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "zzz"])
+    assert rc == 2
+
+
+def test_units_init_idempotent_skips_existing(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"]}, {"id": "g2", "tasks": ["2"]},
+    ]}), encoding="utf-8")
+    wt_root = repo / ".devloop/wt"
+    # 預先建立 g1 的 worktree,模擬 crash 後重跑
+    from devloop.worktree import add_worktree
+    add_worktree(repo, wt_root / "g1", "loop/x-g1", "loop/x")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(wt_root)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [u["id"] for u in cp.units] == ["g1", "g2"]
+    assert (wt_root / "g2").exists()
+
+
+def test_unit_claim_marks_in_progress(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-claim", "--file", str(cp_path), "--id", "g1"])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).units[0]["status"] == "in_progress"
+
+
+def test_unit_claim_unknown_id(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    assert main(["unit-claim", "--file", str(cp_path), "--id", "zzz"]) == 2
+
+
+def test_qa_pass_advances_to_review(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b", iteration=1).save(cp_path)
+    report = tmp_path / "qa.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "behavior", "note": "slow"}]}), encoding="utf-8")
+    rc = main(["qa", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "review"
+    assert "slow" in cp.non_blocking
+
+
+def test_qa_fail_goes_to_fix(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b", iteration=1).save(cp_path)
+    report = tmp_path / "qa.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "behavior", "note": "crash"}]}), encoding="utf-8")
+    rc = main(["qa", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).phase == "fix"
+
+
+def test_start_with_phase_proposal_review(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    rc = main(["start", "--file", str(cp_path), "--change-id", "c",
+               "--branch", "loop/x", "--phase", "proposal_review"])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).phase == "proposal_review"
+
+
+def test_start_defaults_phase_apply(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    main(["start", "--file", str(cp_path), "--change-id", "c", "--branch", "loop/x"])
+    assert Checkpoint.load(cp_path).phase == "apply"
+
+
+def test_proposal_review_clean_advances_to_apply(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b").save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "proposal", "note": "minor"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "apply"
+    assert "minor" in cp.non_blocking
+
+
+def test_proposal_review_blocking_design_escalates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b").save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "design", "note": "wrong approach"}]}), encoding="utf-8")
+    main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert Checkpoint.load(cp_path).phase == "escalated"
+
+
+def test_legs_init_and_leg_done(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(cp_path)
+    rc = main(["legs-init", "--file", str(cp_path), "--kinds", "code,uiux"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [l["kind"] for l in cp.review_legs] == ["code", "uiux"]
+    assert all(l["status"] == "pending" for l in cp.review_legs)
+
+    rc = main(["leg-done", "--file", str(cp_path), "--kind", "code", "--report", "/tmp/c.json"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    code_leg = [l for l in cp.review_legs if l["kind"] == "code"][0]
+    assert code_leg["status"] == "collected"
+    assert code_leg["report"] == "/tmp/c.json"
+
+
+def test_leg_done_unknown_kind(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    cp = Checkpoint(phase="review", change_id="c", branch="b")
+    cp.review_legs = [{"kind": "code", "status": "pending", "report": ""}]
+    cp.save(cp_path)
+    assert main(["leg-done", "--file", str(cp_path), "--kind", "zzz", "--report", "/tmp/z.json"]) == 2
+
+
+def test_review_from_legs_aggregates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    code_rep = tmp_path / "code.json"
+    code_rep.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "code", "note": "nit"}]}), encoding="utf-8")
+    uiux_rep = tmp_path / "uiux.json"
+    uiux_rep.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "code", "note": "contrast too low"}]}), encoding="utf-8")
+    cp = Checkpoint(phase="review", change_id="c", branch="b", iteration=1)
+    cp.review_legs = [
+        {"kind": "code", "status": "collected", "report": str(code_rep)},
+        {"kind": "uiux", "status": "collected", "report": str(uiux_rep)},
+    ]
+    cp.save(cp_path)
+    rc = main(["review", "--file", str(cp_path), "--from-legs"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "fix"          # uiux blocking(code 層)→ fix
+    assert "nit" in cp.non_blocking   # code leg 的 non_blocking 累積
+
+
+def test_review_requires_report_or_legs(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(cp_path)
+    assert main(["review", "--file", str(cp_path)]) == 2
+
+
+def test_review_from_legs_incomplete_fails(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    code_rep = tmp_path / "code.json"
+    code_rep.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "code", "note": "nit"}]}), encoding="utf-8")
+    cp = Checkpoint(phase="review", change_id="c", branch="b", iteration=1)
+    cp.review_legs = [
+        {"kind": "code", "status": "collected", "report": str(code_rep)},
+        {"kind": "uiux", "status": "pending", "report": ""},
+    ]
+    cp.save(cp_path)
+    rc = main(["review", "--file", str(cp_path), "--from-legs"])
+    assert rc == 2
+    assert capsys.readouterr().err != ""
+    # checkpoint phase must remain unchanged
+    assert Checkpoint.load(cp_path).phase == "review"
+
+
+def test_start_invalid_phase_rejected(tmp_path):
+    import pytest
+    cp_path = tmp_path / "cp.json"
+    with pytest.raises(SystemExit) as exc_info:
+        main(["start", "--file", str(cp_path), "--change-id", "c",
+              "--branch", "loop/x", "--phase", "invalid_phase"])
+    assert exc_info.value.code == 2

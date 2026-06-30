@@ -48,3 +48,7 @@ def list_worktree_paths(repo) -> list:
             if p != main:
                 paths.append(p)
     return paths
+
+
+def worktree_exists(repo, path) -> bool:
+    return str(Path(path).resolve()) in list_worktree_paths(repo)
