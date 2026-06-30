@@ -253,6 +253,23 @@ def _cmd_units_cleanup(args):
     return 0
 
 
+def _cmd_unit_resolve(args):
+    cp = Checkpoint.load(args.file)
+    target = None
+    for u in cp.units:
+        if u["id"] == args.id:
+            target = u
+            break
+    if target is None:
+        print("error: no unit %r" % args.id, file=sys.stderr)
+        return 2
+    remove_worktree(args.repo, target["worktree"], target["branch"])
+    target["status"] = "merged"
+    cp.save(args.file)
+    print("unit-resolve: %s merged" % args.id)
+    return 0
+
+
 def _cmd_units_status(args):
     cp = Checkpoint.load(args.file)
     for u in cp.units:
@@ -348,6 +365,12 @@ def build_parser():
     p_uc.add_argument("--repo", required=True)
     p_uc.add_argument("--wt-root", dest="wt_root", required=True)
     p_uc.set_defaults(func=_cmd_units_cleanup)
+
+    p_ur = sub.add_parser("unit-resolve")
+    p_ur.add_argument("--file", required=True)
+    p_ur.add_argument("--repo", required=True)
+    p_ur.add_argument("--id", required=True)
+    p_ur.set_defaults(func=_cmd_unit_resolve)
 
     p_us = sub.add_parser("units-status")
     p_us.add_argument("--file", required=True)

@@ -670,3 +670,29 @@ def test_units_status_none_pending(tmp_path):
     with redirect_stdout(buf):
         rc = main(["units-status", "--file", str(cp_path)])
     assert "pending: -" in buf.getvalue()
+
+
+def test_unit_resolve_marks_merged_and_removes_worktree(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="loop/x")
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "conflict"}]
+    cp.save(cp_path)
+    rc = main(["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "g1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units[0]["status"] == "merged"
+    assert not wt.exists()
+
+
+def test_unit_resolve_unknown_id(tmp_path):
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "conflict"}]).save(cp_path)
+    rc = main(["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "zzz"])
+    assert rc == 2
