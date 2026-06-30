@@ -820,3 +820,30 @@ def test_leg_done_unknown_kind(tmp_path):
     cp.review_legs = [{"kind": "code", "status": "pending", "report": ""}]
     cp.save(cp_path)
     assert main(["leg-done", "--file", str(cp_path), "--kind", "zzz", "--report", "/tmp/z.json"]) == 2
+
+
+def test_review_from_legs_aggregates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    code_rep = tmp_path / "code.json"
+    code_rep.write_text(json.dumps({"findings": [
+        {"severity": "non_blocking", "level": "code", "note": "nit"}]}), encoding="utf-8")
+    uiux_rep = tmp_path / "uiux.json"
+    uiux_rep.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "code", "note": "contrast too low"}]}), encoding="utf-8")
+    cp = Checkpoint(phase="review", change_id="c", branch="b", iteration=1)
+    cp.review_legs = [
+        {"kind": "code", "status": "collected", "report": str(code_rep)},
+        {"kind": "uiux", "status": "collected", "report": str(uiux_rep)},
+    ]
+    cp.save(cp_path)
+    rc = main(["review", "--file", str(cp_path), "--from-legs"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "fix"          # uiux blocking(code 層)→ fix
+    assert "nit" in cp.non_blocking   # code leg 的 non_blocking 累積
+
+
+def test_review_requires_report_or_legs(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(cp_path)
+    assert main(["review", "--file", str(cp_path)]) == 2
