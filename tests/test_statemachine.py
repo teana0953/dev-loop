@@ -2,6 +2,7 @@ import pytest
 
 from devloop.statemachine import (
     APPLY_DONE,
+    FINISH_DONE,
     FIX_DONE,
     GATE_FAIL,
     GATE_PASS,
@@ -84,3 +85,17 @@ def test_proposal_review_blocking_design_escalates():
 def test_qa_invalid_event_raises():
     with pytest.raises(InvalidTransition):
         transition("qa", 1, GATE_PASS)
+
+
+def test_merge_finish_done_to_done():
+    assert transition("merge", 2, FINISH_DONE) == ("done", 2)
+
+
+def test_merge_only_accepts_finish_done():
+    with pytest.raises(InvalidTransition):
+        transition("merge", 2, GATE_PASS)
+
+
+def test_done_is_terminal():
+    with pytest.raises(InvalidTransition):
+        transition("done", 2, FINISH_DONE)

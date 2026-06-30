@@ -28,6 +28,7 @@ REVIEW_NO_BLOCKING = "review_no_blocking"
 REVIEW_BLOCKING_CODE = "review_blocking_code"
 REVIEW_BLOCKING_PROPOSAL = "review_blocking_proposal"
 FIX_DONE = "fix_done"
+FINISH_DONE = "finish_done"
 
 DEFAULT_MAX_ITERATIONS = 3
 
@@ -69,4 +70,6 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
         return ("propose", iteration)
     if phase == "fix" and event == FIX_DONE:
         return ("gate", iteration)
+    if phase == "merge" and event == FINISH_DONE:
+        return ("done", iteration)
     raise InvalidTransition("no transition from %r on %r" % (phase, event))
