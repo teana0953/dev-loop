@@ -229,6 +229,25 @@ def _cmd_units_merge(args):
     return 0
 
 
+def _cmd_units_cleanup(args):
+    cp = Checkpoint.load(args.file)
+    removed = 0
+    known = set()
+    for u in cp.units:
+        known.add(str(Path(u["worktree"]).resolve()))
+        if u["status"] == "merged":
+            remove_worktree(args.repo, u["worktree"], u["branch"])
+            removed += 1
+    for p in list_worktree_paths(args.repo):
+        if p not in known:
+            subprocess.run(["git", "-C", str(args.repo), "worktree", "remove", "--force", p],
+                           capture_output=True, text=True)
+            removed += 1
+    cp.save(args.file)
+    print("units-cleanup: removed %d" % removed)
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -309,6 +328,11 @@ def build_parser():
     p_um.add_argument("--file", required=True)
     p_um.add_argument("--repo", required=True)
     p_um.set_defaults(func=_cmd_units_merge)
+
+    p_uc = sub.add_parser("units-cleanup")
+    p_uc.add_argument("--file", required=True)
+    p_uc.add_argument("--repo", required=True)
+    p_uc.set_defaults(func=_cmd_units_cleanup)
 
     return parser
 

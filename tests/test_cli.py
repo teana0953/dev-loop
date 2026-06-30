@@ -550,3 +550,31 @@ def test_units_merge_conflict_marks_unit(tmp_path):
     rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
     assert rc == 1
     assert Checkpoint.load(cp_path).units[0]["status"] == "conflict"
+
+
+def test_units_cleanup_removes_merged(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="loop/x")
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "merged"}]
+    cp.save(cp_path)
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 0
+    assert not wt.exists()
+
+
+def test_units_cleanup_removes_orphan(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    orphan = repo / ".devloop/wt/ghost"
+    add_worktree(repo, orphan, "loop/x-ghost", "loop/x")  # checkpoint 不記
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x", units=[]).save(cp_path)
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 0
+    assert not orphan.exists()
