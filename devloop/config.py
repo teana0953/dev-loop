@@ -20,3 +20,12 @@ def load_config(path) -> Config:
         trigger=data.get("trigger", "local"),
         finish=data.get("finish", None),
     )
+
+
+def resolve_finish(config, meta) -> str:
+    """決定收尾策略:change metadata 的 finish override 全域 config;皆無 → ask。"""
+    if meta.finish is not None:
+        return meta.finish
+    if config.finish is not None:
+        return config.finish
+    return "ask"
