@@ -61,3 +61,36 @@ def test_save_creates_missing_parent_dirs(tmp_path):
     cp = Checkpoint(phase="apply", change_id="c", branch="b")
     cp.save(path)
     assert Checkpoint.load(path).phase == "apply"
+
+
+import json
+from devloop.checkpoint import Checkpoint
+
+
+def test_units_and_legs_default_empty():
+    cp = Checkpoint(phase="apply", change_id="c", branch="b")
+    assert cp.units == []
+    assert cp.review_legs == []
+
+
+def test_units_roundtrip(tmp_path):
+    path = tmp_path / "cp.json"
+    cp = Checkpoint(phase="apply", change_id="c", branch="b",
+                    units=[{"id": "g1", "status": "pending"}],
+                    review_legs=[{"kind": "code", "status": "pending"}])
+    cp.save(path)
+    loaded = Checkpoint.load(path)
+    assert loaded.units == [{"id": "g1", "status": "pending"}]
+    assert loaded.review_legs == [{"kind": "code", "status": "pending"}]
+
+
+def test_load_legacy_checkpoint_without_units(tmp_path):
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({
+        "phase": "apply", "change_id": "c", "branch": "b",
+        "iteration": 0, "last_artifact": "", "non_blocking": [],
+        "updated_at": "", "resume_exec": None,
+    }), encoding="utf-8")
+    loaded = Checkpoint.load(path)
+    assert loaded.units == []
+    assert loaded.review_legs == []

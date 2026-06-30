@@ -18,6 +18,8 @@ class Checkpoint:
     non_blocking: list = field(default_factory=list)
     updated_at: str = ""
     resume_exec: str = None
+    units: list = field(default_factory=list)
+    review_legs: list = field(default_factory=list)
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
