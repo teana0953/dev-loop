@@ -22,7 +22,7 @@ from devloop.statemachine import (
     InvalidTransition,
     transition,
 )
-from devloop.units import build_units
+from devloop.units import build_units, mark
 from devloop.worktree import add_worktree
 
 
@@ -197,6 +197,18 @@ def _branch_exists(repo, branch):
     return r.returncode == 0
 
 
+def _cmd_unit_done(args):
+    cp = Checkpoint.load(args.file)
+    try:
+        mark(cp.units, args.id, "done")
+    except KeyError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    cp.save(args.file)
+    print("unit-done: %s" % args.id)
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -267,6 +279,11 @@ def build_parser():
     p_ui.add_argument("--meta", required=True)
     p_ui.add_argument("--wt-root", dest="wt_root", required=True)
     p_ui.set_defaults(func=_cmd_units_init)
+
+    p_ud = sub.add_parser("unit-done")
+    p_ud.add_argument("--file", required=True)
+    p_ud.add_argument("--id", required=True)
+    p_ud.set_defaults(func=_cmd_unit_done)
 
     return parser
 

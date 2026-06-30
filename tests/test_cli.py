@@ -486,3 +486,23 @@ def test_units_init_serial_no_worktrees(tmp_path):
                "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
     assert rc == 0
     assert Checkpoint.load(cp_path).units == []
+
+
+def test_unit_done_marks_done(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"},
+                      {"id": "g2", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-done", "--file", str(cp_path), "--id", "g1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units[0]["status"] == "done"
+    assert cp.units[1]["status"] == "pending"
+
+
+def test_unit_done_unknown_id(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-done", "--file", str(cp_path), "--id", "zzz"])
+    assert rc == 2
