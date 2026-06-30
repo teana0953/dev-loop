@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
-from devloop.changemeta import load_change_meta
+from devloop.changemeta import is_serial, load_change_meta
 from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
@@ -174,14 +174,14 @@ def _cmd_archive(args):
 def _cmd_units_init(args):
     cp = Checkpoint.load(args.file)
     meta = load_change_meta(args.meta)
-    units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
-    if not units:
+    if is_serial(meta):
         cp.units = []
         cp.save(args.file)
         print("units-init: serial")
         return 0
+    units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
+    base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
     for u in units:
-        base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
         add_worktree(args.repo, u["worktree"], u["branch"], base)
     cp.units = units
     cp.save(args.file)
@@ -211,8 +211,12 @@ def _cmd_unit_done(args):
 
 def _cmd_units_merge(args):
     cp = Checkpoint.load(args.file)
-    subprocess.run(["git", "-C", str(args.repo), "checkout", cp.branch],
-                   capture_output=True, text=True)
+    co = subprocess.run(["git", "-C", str(args.repo), "checkout", cp.branch],
+                        capture_output=True, text=True)
+    if co.returncode != 0:
+        print("error: git checkout %s failed: %s" % (cp.branch, co.stderr.strip()),
+              file=sys.stderr)
+        return 2
     conflicts = []
     for u in cp.units:
         if u["status"] != "done":
@@ -231,6 +235,7 @@ def _cmd_units_merge(args):
 
 def _cmd_units_cleanup(args):
     cp = Checkpoint.load(args.file)
+    wt_root = str(Path(args.wt_root).resolve()) + os.sep
     removed = 0
     known = set()
     for u in cp.units:
@@ -239,7 +244,7 @@ def _cmd_units_cleanup(args):
             remove_worktree(args.repo, u["worktree"], u["branch"])
             removed += 1
     for p in list_worktree_paths(args.repo):
-        if p not in known:
+        if p not in known and p.startswith(wt_root):
             subprocess.run(["git", "-C", str(args.repo), "worktree", "remove", "--force", p],
                            capture_output=True, text=True)
             removed += 1
@@ -341,6 +346,7 @@ def build_parser():
     p_uc = sub.add_parser("units-cleanup")
     p_uc.add_argument("--file", required=True)
     p_uc.add_argument("--repo", required=True)
+    p_uc.add_argument("--wt-root", dest="wt_root", required=True)
     p_uc.set_defaults(func=_cmd_units_cleanup)
 
     p_us = sub.add_parser("units-status")

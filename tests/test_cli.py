@@ -488,6 +488,26 @@ def test_units_init_serial_no_worktrees(tmp_path):
     assert Checkpoint.load(cp_path).units == []
 
 
+def test_units_init_single_group_is_serial(tmp_path, capsys):
+    # Exactly ONE parallel_group still counts as serial — no worktrees created.
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"], "files_hint": ["a/"]},
+    ]}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.units == []
+    assert not (repo / ".devloop/wt").exists()
+    out = capsys.readouterr().out
+    assert "serial" in out
+
+
 def test_unit_done_marks_done(tmp_path):
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="apply", change_id="c", branch="b",
@@ -552,6 +572,27 @@ def test_units_merge_conflict_marks_unit(tmp_path):
     assert Checkpoint.load(cp_path).units[0]["status"] == "conflict"
 
 
+def test_units_merge_checkout_failure_aborts(tmp_path):
+    # If checkout to cp.branch fails, abort without merging or mutating unit statuses.
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    # Use a branch name that does not exist
+    Checkpoint(phase="apply", change_id="c", branch="nonexistent/branch").save(cp_path)
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    (wt / "g1.txt").write_text("g1\n")
+    _git(wt, "add", "."); _git(wt, "commit", "-m", "g1")
+    cp = Checkpoint.load(cp_path)
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "done"}]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 2
+    # unit status must remain unchanged ("done"), not "merged" or "conflict"
+    assert Checkpoint.load(cp_path).units[0]["status"] == "done"
+
+
 def test_units_cleanup_removes_merged(tmp_path):
     repo = _repo(tmp_path)
     _git(repo, "checkout", "-b", "loop/x")
@@ -562,7 +603,8 @@ def test_units_cleanup_removes_merged(tmp_path):
     cp = Checkpoint(phase="apply", change_id="c", branch="loop/x")
     cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "merged"}]
     cp.save(cp_path)
-    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo)])
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(repo / ".devloop/wt")])
     assert rc == 0
     assert not wt.exists()
 
@@ -575,9 +617,26 @@ def test_units_cleanup_removes_orphan(tmp_path):
     add_worktree(repo, orphan, "loop/x-ghost", "loop/x")  # checkpoint 不記
     cp_path = repo / ".devloop/checkpoint.json"
     Checkpoint(phase="apply", change_id="c", branch="loop/x", units=[]).save(cp_path)
-    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo)])
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(repo / ".devloop/wt")])
     assert rc == 0
     assert not orphan.exists()
+
+
+def test_units_cleanup_keeps_out_of_scope_worktree(tmp_path):
+    # Worktrees outside wt_root must NOT be removed.
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    from devloop.worktree import add_worktree
+    external = tmp_path / "external"
+    add_worktree(repo, external, "loop/x-ext", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x", units=[]).save(cp_path)
+    wt_root = repo / ".devloop/wt"
+    rc = main(["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+               "--wt-root", str(wt_root)])
+    assert rc == 0
+    assert external.exists()  # external worktree was NOT removed
 
 
 # ---------------------------------------------------------------------------
