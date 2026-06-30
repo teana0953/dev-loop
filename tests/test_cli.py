@@ -758,3 +758,17 @@ def test_qa_fail_goes_to_fix(tmp_path):
     rc = main(["qa", "--file", str(cp_path), "--report", str(report)])
     assert rc == 0
     assert Checkpoint.load(cp_path).phase == "fix"
+
+
+def test_start_with_phase_proposal_review(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    rc = main(["start", "--file", str(cp_path), "--change-id", "c",
+               "--branch", "loop/x", "--phase", "proposal_review"])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).phase == "proposal_review"
+
+
+def test_start_defaults_phase_apply(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    main(["start", "--file", str(cp_path), "--change-id", "c", "--branch", "loop/x"])
+    assert Checkpoint.load(cp_path).phase == "apply"

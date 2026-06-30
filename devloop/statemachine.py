@@ -4,6 +4,7 @@ from __future__ import annotations
 PHASES = (
     "brainstorm",
     "propose",
+    "proposal_review",
     "apply",
     "gate",
     "qa",
@@ -16,6 +17,9 @@ PHASES = (
 
 # Events
 APPLY_DONE = "apply_done"
+PROPOSE_CLEAN = "propose_clean"
+PROPOSE_BLOCKING_PROPOSAL = "propose_blocking_proposal"
+PROPOSE_BLOCKING_DESIGN = "propose_blocking_design"
 GATE_PASS = "gate_pass"
 GATE_FAIL = "gate_fail"
 QA_PASS = "qa_pass"
@@ -38,6 +42,12 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
     iteration 在 gate_pass 進入 qa 時 +1(代表第幾輪 qa/review);
     超過 max_iterations 則轉為 escalated。
     """
+    if phase == "proposal_review" and event == PROPOSE_CLEAN:
+        return ("apply", iteration)
+    if phase == "proposal_review" and event == PROPOSE_BLOCKING_PROPOSAL:
+        return ("propose", iteration)
+    if phase == "proposal_review" and event == PROPOSE_BLOCKING_DESIGN:
+        return ("escalated", iteration)
     if phase == "apply" and event == APPLY_DONE:
         return ("gate", iteration)
     if phase == "gate" and event == GATE_PASS:

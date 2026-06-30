@@ -5,6 +5,9 @@ from devloop.statemachine import (
     FIX_DONE,
     GATE_FAIL,
     GATE_PASS,
+    PROPOSE_BLOCKING_DESIGN,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_CLEAN,
     QA_FAIL,
     QA_PASS,
     REVIEW_BLOCKING_CODE,
@@ -64,3 +67,15 @@ def test_qa_pass_enters_review_without_incrementing():
 
 def test_qa_fail_goes_to_fix():
     assert transition("qa", 2, QA_FAIL) == ("fix", 2)
+
+
+def test_proposal_review_clean_to_apply():
+    assert transition("proposal_review", 0, PROPOSE_CLEAN) == ("apply", 0)
+
+
+def test_proposal_review_blocking_proposal_to_propose():
+    assert transition("proposal_review", 0, PROPOSE_BLOCKING_PROPOSAL) == ("propose", 0)
+
+
+def test_proposal_review_blocking_design_escalates():
+    assert transition("proposal_review", 0, PROPOSE_BLOCKING_DESIGN) == ("escalated", 0)

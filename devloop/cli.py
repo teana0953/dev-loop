@@ -28,7 +28,7 @@ from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_w
 
 def _cmd_start(args):
     cp = Checkpoint(
-        phase="apply",
+        phase=args.phase,
         change_id=args.change_id,
         branch=args.branch,
         resume_exec=args.resume_exec,
@@ -312,6 +312,7 @@ def build_parser():
     p_start.add_argument("--change-id", required=True, dest="change_id")
     p_start.add_argument("--branch", required=True)
     p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
+    p_start.add_argument("--phase", default="apply")
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status")
