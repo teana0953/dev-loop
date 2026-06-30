@@ -120,6 +120,28 @@ def _cmd_proposal_review(args):
     return 0
 
 
+def _cmd_legs_init(args):
+    cp = Checkpoint.load(args.file)
+    kinds = [k for k in args.kinds.split(",") if k]
+    cp.review_legs = [{"kind": k, "status": "pending", "report": ""} for k in kinds]
+    cp.save(args.file)
+    print("legs-init: %d" % len(cp.review_legs))
+    return 0
+
+
+def _cmd_leg_done(args):
+    cp = Checkpoint.load(args.file)
+    for leg in cp.review_legs:
+        if leg["kind"] == args.kind:
+            leg["status"] = "collected"
+            leg["report"] = args.report
+            cp.save(args.file)
+            print("leg-done: %s" % args.kind)
+            return 0
+    print("error: no leg %r" % args.kind, file=sys.stderr)
+    return 2
+
+
 def _cmd_auto_resume(args):
     reset_at = datetime.fromisoformat(args.reset_at)
     return run_adapter(args.file, reset_at, shlex.split(args.exec))
@@ -365,6 +387,17 @@ def build_parser():
     p_pr.add_argument("--report", required=True)
     p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_pr.set_defaults(func=_cmd_proposal_review)
+
+    p_li = sub.add_parser("legs-init")
+    p_li.add_argument("--file", required=True)
+    p_li.add_argument("--kinds", required=True)
+    p_li.set_defaults(func=_cmd_legs_init)
+
+    p_ld = sub.add_parser("leg-done")
+    p_ld.add_argument("--file", required=True)
+    p_ld.add_argument("--kind", required=True)
+    p_ld.add_argument("--report", required=True)
+    p_ld.set_defaults(func=_cmd_leg_done)
 
     p_auto = sub.add_parser("auto-resume")
     p_auto.add_argument("--file", required=True)

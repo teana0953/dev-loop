@@ -795,3 +795,28 @@ def test_proposal_review_blocking_design_escalates(tmp_path):
         {"severity": "blocking", "level": "design", "note": "wrong approach"}]}), encoding="utf-8")
     main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
     assert Checkpoint.load(cp_path).phase == "escalated"
+
+
+def test_legs_init_and_leg_done(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(cp_path)
+    rc = main(["legs-init", "--file", str(cp_path), "--kinds", "code,uiux"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [l["kind"] for l in cp.review_legs] == ["code", "uiux"]
+    assert all(l["status"] == "pending" for l in cp.review_legs)
+
+    rc = main(["leg-done", "--file", str(cp_path), "--kind", "code", "--report", "/tmp/c.json"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    code_leg = [l for l in cp.review_legs if l["kind"] == "code"][0]
+    assert code_leg["status"] == "collected"
+    assert code_leg["report"] == "/tmp/c.json"
+
+
+def test_leg_done_unknown_kind(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    cp = Checkpoint(phase="review", change_id="c", branch="b")
+    cp.review_legs = [{"kind": "code", "status": "pending", "report": ""}]
+    cp.save(cp_path)
+    assert main(["leg-done", "--file", str(cp_path), "--kind", "zzz", "--report", "/tmp/z.json"]) == 2
