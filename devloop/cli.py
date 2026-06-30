@@ -23,7 +23,7 @@ from devloop.statemachine import (
     transition,
 )
 from devloop.units import build_units, mark
-from devloop.worktree import add_worktree
+from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths
 
 
 def _cmd_start(args):
@@ -209,6 +209,26 @@ def _cmd_unit_done(args):
     return 0
 
 
+def _cmd_units_merge(args):
+    cp = Checkpoint.load(args.file)
+    subprocess.run(["git", "-C", str(args.repo), "checkout", cp.branch],
+                   capture_output=True, text=True)
+    conflicts = []
+    for u in cp.units:
+        if u["status"] != "done":
+            continue
+        res = merge_branch(args.repo, u["branch"])
+        u["status"] = "merged" if res.ok else "conflict"
+        if not res.ok:
+            conflicts.append(u["id"])
+    cp.save(args.file)
+    if conflicts:
+        print("units-merge: conflict in %s" % ", ".join(conflicts))
+        return 1
+    print("units-merge: all merged")
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="devloop")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -284,6 +304,11 @@ def build_parser():
     p_ud.add_argument("--file", required=True)
     p_ud.add_argument("--id", required=True)
     p_ud.set_defaults(func=_cmd_unit_done)
+
+    p_um = sub.add_parser("units-merge")
+    p_um.add_argument("--file", required=True)
+    p_um.add_argument("--repo", required=True)
+    p_um.set_defaults(func=_cmd_units_merge)
 
     return parser
 

@@ -506,3 +506,47 @@ def test_unit_done_unknown_id(tmp_path):
                units=[{"id": "g1", "status": "pending"}]).save(cp_path)
     rc = main(["unit-done", "--file", str(cp_path), "--id", "zzz"])
     assert rc == 2
+
+
+def test_units_merge_success(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    # 手動建兩個不衝突的 unit 分支
+    for gid, fname in (("g1", "g1.txt"), ("g2", "g2.txt")):
+        wt = repo / (".devloop/wt/" + gid)
+        from devloop.worktree import add_worktree
+        add_worktree(repo, wt, "loop/x-" + gid, "loop/x")
+        (wt / fname).write_text(gid + "\n")
+        _git(wt, "add", "."); _git(wt, "commit", "-m", gid)
+    cp = Checkpoint.load(cp_path)
+    cp.units = [
+        {"id": "g1", "worktree": str(repo / ".devloop/wt/g1"), "branch": "loop/x-g1", "status": "done"},
+        {"id": "g2", "worktree": str(repo / ".devloop/wt/g2"), "branch": "loop/x-g2", "status": "done"},
+    ]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert all(u["status"] == "merged" for u in cp.units)
+    assert (repo / "g1.txt").exists() and (repo / "g2.txt").exists()
+
+
+def test_units_merge_conflict_marks_unit(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    from devloop.worktree import add_worktree
+    wt = repo / ".devloop/wt/g1"
+    add_worktree(repo, wt, "loop/x-g1", "loop/x")
+    (wt / "base.txt").write_text("g1\n"); _git(wt, "add", "."); _git(wt, "commit", "-m", "g1")
+    # 短命分支也改 base.txt → 衝突
+    (repo / "base.txt").write_text("main\n"); _git(repo, "add", "."); _git(repo, "commit", "-m", "main")
+    cp = Checkpoint.load(cp_path)
+    cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "done"}]
+    cp.save(cp_path)
+    rc = main(["units-merge", "--file", str(cp_path), "--repo", str(repo)])
+    assert rc == 1
+    assert Checkpoint.load(cp_path).units[0]["status"] == "conflict"
