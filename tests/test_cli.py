@@ -57,7 +57,7 @@ def test_event_gate_pass_increments_iteration(tmp_path):
     Checkpoint(phase="gate", change_id="c", branch="b", iteration=0).save(f)
     main(["event", "--file", str(f), "--event", "gate_pass"])
     cp = Checkpoint.load(f)
-    assert cp.phase == "review"
+    assert cp.phase == "qa"
     assert cp.iteration == 1
 
 
@@ -71,10 +71,10 @@ def test_event_escalates_when_over_limit(tmp_path):
 def test_gate_subcommand_exit_code(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b").save(f)
-    # 全綠 gate → exit 0 且階段前進到 review
+    # 全綠 gate → exit 0 且階段前進到 qa(內圈 gate→qa→review)
     code = main(["gate", "--file", str(f), "--cmd", "true"])
     assert code == 0
-    assert Checkpoint.load(f).phase == "review"
+    assert Checkpoint.load(f).phase == "qa"
 
 
 def test_gate_subcommand_failure_routes_to_fix(tmp_path):
@@ -91,7 +91,7 @@ def test_gate_supports_multiword_commands(tmp_path):
     # 多字詞命令(如真實的 `pytest tests/`)須被正確切分為 argv,而非當成單一執行檔
     code = main(["gate", "--file", str(f), "--cmd", "sh -c 'exit 0'"])
     assert code == 0
-    assert Checkpoint.load(f).phase == "review"
+    assert Checkpoint.load(f).phase == "qa"
 
 
 from datetime import timezone, datetime, timedelta
