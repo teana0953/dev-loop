@@ -68,3 +68,11 @@ def test_remove_worktree(repo, tmp_path):
     remove_worktree(repo, wt, "loop-g1")
     assert not wt.exists()
     assert str(wt.resolve()) not in list_worktree_paths(repo)
+
+
+def test_worktree_exists(repo, tmp_path):
+    from devloop.worktree import add_worktree, worktree_exists
+    wt = tmp_path / "wt-g1"
+    assert worktree_exists(repo, wt) is False
+    add_worktree(repo, wt, "loop-g1", "main")
+    assert worktree_exists(repo, wt) is True

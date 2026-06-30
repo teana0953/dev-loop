@@ -23,7 +23,7 @@ from devloop.statemachine import (
     transition,
 )
 from devloop.units import build_units, mark, pending_units
-from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths
+from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths, worktree_exists
 
 
 def _cmd_start(args):
@@ -182,7 +182,8 @@ def _cmd_units_init(args):
     units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
     base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
     for u in units:
-        add_worktree(args.repo, u["worktree"], u["branch"], base)
+        if not worktree_exists(args.repo, u["worktree"]):
+            add_worktree(args.repo, u["worktree"], u["branch"], base)
     cp.units = units
     cp.save(args.file)
     print("units-init: %d units" % len(units))
@@ -206,6 +207,18 @@ def _cmd_unit_done(args):
         return 2
     cp.save(args.file)
     print("unit-done: %s" % args.id)
+    return 0
+
+
+def _cmd_unit_claim(args):
+    cp = Checkpoint.load(args.file)
+    try:
+        mark(cp.units, args.id, "in_progress")
+    except KeyError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    cp.save(args.file)
+    print("unit-claim: %s" % args.id)
     return 0
 
 
@@ -354,6 +367,11 @@ def build_parser():
     p_ud.add_argument("--file", required=True)
     p_ud.add_argument("--id", required=True)
     p_ud.set_defaults(func=_cmd_unit_done)
+
+    p_ucl = sub.add_parser("unit-claim")
+    p_ucl.add_argument("--file", required=True)
+    p_ucl.add_argument("--id", required=True)
+    p_ucl.set_defaults(func=_cmd_unit_claim)
 
     p_um = sub.add_parser("units-merge")
     p_um.add_argument("--file", required=True)

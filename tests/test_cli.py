@@ -696,3 +696,41 @@ def test_unit_resolve_unknown_id(tmp_path):
                units=[{"id": "g1", "status": "conflict"}]).save(cp_path)
     rc = main(["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "zzz"])
     assert rc == 2
+
+
+def test_units_init_idempotent_skips_existing(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-b", "loop/x")
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"]}, {"id": "g2", "tasks": ["2"]},
+    ]}), encoding="utf-8")
+    wt_root = repo / ".devloop/wt"
+    # 預先建立 g1 的 worktree,模擬 crash 後重跑
+    from devloop.worktree import add_worktree
+    add_worktree(repo, wt_root / "g1", "loop/x-g1", "loop/x")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(wt_root)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert [u["id"] for u in cp.units] == ["g1", "g2"]
+    assert (wt_root / "g2").exists()
+
+
+def test_unit_claim_marks_in_progress(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    rc = main(["unit-claim", "--file", str(cp_path), "--id", "g1"])
+    assert rc == 0
+    assert Checkpoint.load(cp_path).units[0]["status"] == "in_progress"
+
+
+def test_unit_claim_unknown_id(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+    assert main(["unit-claim", "--file", str(cp_path), "--id", "zzz"]) == 2
