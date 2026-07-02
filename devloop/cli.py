@@ -205,28 +205,42 @@ def _spawn_watcher(exec_command, heartbeat):
     return proc.pid
 
 
-def _cmd_arm_local(args):
-    cp = Checkpoint.load(args.file)
-    exec_str = args.exec or cp.resume_exec
+def ensure_armed(checkpoint_path, heartbeat=DEFAULT_HEARTBEAT, exec_override=None):
+    """idempotent 確保 watcher 在位。回傳 (status, info),不印字。
+
+    status ∈ "armed"(剛 spawn,info=pid)/ "already"(既存活,info=pid)/
+    "skipped"(無 resume 命令,info=None)。
+    """
+    cp = Checkpoint.load(checkpoint_path)
+    exec_str = exec_override or cp.resume_exec
     if not exec_str:
-        print(
-            "error: no resume command (checkpoint.resume_exec empty and no --exec)",
-            file=sys.stderr,
-        )
-        return 2
-    pid_path = Path(args.file).parent / "watcher.pid"
+        return ("skipped", None)
+    pid_path = Path(checkpoint_path).parent / "watcher.pid"
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text().strip())
         except ValueError:
             pid = None
         if pid is not None and _pid_alive(pid):
-            print("watcher already running (pid=%d)" % pid)
-            return 0
-    pid = _spawn_watcher(shlex.split(exec_str), args.heartbeat)
+            return ("already", pid)
+    pid = _spawn_watcher(shlex.split(exec_str), heartbeat)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(pid))
-    print("watcher armed (pid=%d)" % pid)
+    return ("armed", pid)
+
+
+def _cmd_arm_local(args):
+    status, info = ensure_armed(args.file, heartbeat=args.heartbeat, exec_override=args.exec)
+    if status == "skipped":
+        print(
+            "error: no resume command (checkpoint.resume_exec empty and no --exec)",
+            file=sys.stderr,
+        )
+        return 2
+    if status == "already":
+        print("watcher already running (pid=%d)" % info)
+        return 0
+    print("watcher armed (pid=%d)" % info)
     return 0
 
 

@@ -507,6 +507,76 @@ def test_arm_local_spawns_real_watcher(tmp_path):
             pass
 
 
+def test_ensure_armed_spawns_when_no_pidfile(tmp_path, monkeypatch, capsys):
+    # ensure_armed 是從 _cmd_arm_local 抽出的核心函式:回傳結果,不印字。
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="a b").save(f)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 4242)
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "armed"
+    assert info == 4242
+    assert (f.parent / "watcher.pid").read_text().strip() == "4242"
+    assert capsys.readouterr().out == ""
+
+
+def test_ensure_armed_already_when_watcher_alive(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    (f.parent / "watcher.pid").write_text("999")
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "already"
+    assert info == 999
+
+
+def test_ensure_armed_skipped_without_exec(tmp_path, capsys):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "skipped"
+    assert capsys.readouterr().out == ""
+
+
+def test_ensure_armed_exec_override(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+    captured = {}
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (captured.update(cmd=cmd), 7)[1])
+
+    status, info = cli.ensure_armed(str(f), exec_override="true")
+    assert status == "armed"
+    assert captured["cmd"] == ["true"]
+
+
+def test_arm_local_is_thin_shell_over_ensure_armed(tmp_path, monkeypatch):
+    # arm-local 殼呼叫 ensure_armed,自己只管 stdout。
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    calls = []
+
+    def fake_ensure_armed(checkpoint_path, heartbeat=30, exec_override=None):
+        calls.append((checkpoint_path, heartbeat, exec_override))
+        return ("armed", 321)
+
+    monkeypatch.setattr(cli, "ensure_armed", fake_ensure_armed)
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert calls == [(str(f), cli.DEFAULT_HEARTBEAT, None)]
+
+
 def test_status_shows_change_id_and_branch(tmp_path, capsys):
     f = tmp_path / "cp.json"
     Checkpoint(phase="review", change_id="add-foo", branch="loop/add-foo", iteration=2).save(f)
