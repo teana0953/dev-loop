@@ -1358,3 +1358,23 @@ def test_auto_arm_disabled_by_config(tmp_path, monkeypatch):
     rc2 = main(["arm-local", "--file", str(cp_path)])
     assert rc2 == 0
     assert spawned == [["true"]]
+
+
+def test_auto_arm_failure_warns_but_does_not_change_exit_code_or_stdout(tmp_path, monkeypatch, capsys):
+    # task 1.4:auto-arm spawn 失敗只 stderr warning,exit 0 該 exit 0 的主命令不受影響。
+    import devloop.cli as cli
+
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true").save(cp_path)
+
+    def boom(cmd, hb):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(cli, "_spawn_watcher", boom)
+
+    rc = main(["event", "--file", str(cp_path), "--event", "apply_done"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "phase=gate" in captured.out
+    assert captured.err.startswith("warning: auto-arm failed") or "warning: auto-arm failed" in captured.err
+    assert Checkpoint.load(cp_path).phase == "gate"
