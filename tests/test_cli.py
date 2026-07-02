@@ -94,6 +94,46 @@ def test_gate_supports_multiword_commands(tmp_path):
     assert Checkpoint.load(f).phase == "qa"
 
 
+def test_gate_failure_increments_gate_failures(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=0).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "fix"
+    assert cp.gate_failures == 1
+
+
+def test_gate_failure_exceeding_max_gate_escalates(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=3).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "escalated"
+    assert cp.gate_failures == 4
+
+
+def test_gate_failure_respects_max_gate_flag(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=1).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false", "--max-gate", "1"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "escalated"
+    assert cp.gate_failures == 2
+
+
+def test_gate_pass_does_not_reset_gate_failures(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=2).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "true"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "qa"
+    assert cp.gate_failures == 2
+
+
 from datetime import timezone, datetime, timedelta
 import json
 

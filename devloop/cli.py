@@ -24,6 +24,7 @@ from devloop.statemachine import (
     DEFAULT_MAX_ITERATIONS,
     GATE_FAIL,
     GATE_PASS,
+    GATE_RETRY_EXCEEDED,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
@@ -72,7 +73,11 @@ def _cmd_event(args):
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
     result = run_gate([shlex.split(c) for c in args.cmd], timeout=args.timeout)
-    event = GATE_PASS if result.passed else GATE_FAIL
+    if result.passed:
+        event = GATE_PASS
+    else:
+        cp.gate_failures += 1
+        event = GATE_RETRY_EXCEEDED if cp.gate_failures > args.max_gate else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     if not result.passed:
@@ -402,6 +407,7 @@ def build_parser():
     p_gate.add_argument("--file", required=True)
     p_gate.add_argument("--cmd", action="append", default=[])
     p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_gate.add_argument("--max-gate", dest="max_gate", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_gate.add_argument("--timeout", type=int, default=600)
     p_gate.set_defaults(func=_cmd_gate)
 
