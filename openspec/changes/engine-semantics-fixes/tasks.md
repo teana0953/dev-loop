@@ -4,7 +4,7 @@
 
 ## 2. checkpoint 欄位
 
-- [ ] 2.1 TDD:`checkpoint.py` 新增 `propose_attempts`、`gate_failures` 欄位;序列化往返 + 缺欄位載入視為 0(v2 向後相容)
+- [x] 2.1 TDD:`checkpoint.py` 新增 `propose_attempts`、`gate_failures` 欄位;序列化往返 + 缺欄位載入視為 0(v2 向後相容)
 
 ## 3. cli 計數與改發
 

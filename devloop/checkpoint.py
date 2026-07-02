@@ -20,6 +20,8 @@ class Checkpoint:
     resume_exec: str = None
     units: list = field(default_factory=list)
     review_legs: list = field(default_factory=list)
+    propose_attempts: int = 0
+    gate_failures: int = 0
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
