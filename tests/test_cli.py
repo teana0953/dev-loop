@@ -68,6 +68,45 @@ def test_event_escalates_when_over_limit(tmp_path):
     assert Checkpoint.load(f).phase == "escalated"
 
 
+def test_event_human_resume_propose_zeroes_counters(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="escalated", change_id="c", branch="b",
+               iteration=4, propose_attempts=4, gate_failures=2).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_propose"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "propose"
+    assert cp.iteration == 0
+    assert cp.propose_attempts == 0
+    assert cp.gate_failures == 0
+
+
+def test_event_human_resume_fix_zeroes_counters(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="escalated", change_id="c", branch="b",
+               iteration=4, propose_attempts=1, gate_failures=4).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_fix"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "fix"
+    assert cp.iteration == 0
+    assert cp.propose_attempts == 0
+    assert cp.gate_failures == 0
+
+
+def test_event_human_resume_fix_rejected_outside_escalated(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b",
+               iteration=1, propose_attempts=1, gate_failures=1).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_fix"])
+    assert code == 2
+    cp = Checkpoint.load(f)
+    assert cp.phase == "review"
+    assert cp.iteration == 1
+    assert cp.propose_attempts == 1
+    assert cp.gate_failures == 1
+
+
 def test_gate_subcommand_exit_code(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b").save(f)
@@ -92,6 +131,46 @@ def test_gate_supports_multiword_commands(tmp_path):
     code = main(["gate", "--file", str(f), "--cmd", "sh -c 'exit 0'"])
     assert code == 0
     assert Checkpoint.load(f).phase == "qa"
+
+
+def test_gate_failure_increments_gate_failures(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=0).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "fix"
+    assert cp.gate_failures == 1
+
+
+def test_gate_failure_exceeding_max_gate_escalates(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=3).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "escalated"
+    assert cp.gate_failures == 4
+
+
+def test_gate_failure_respects_max_gate_flag(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=1).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false", "--max-gate", "1"])
+    assert code == 1
+    cp = Checkpoint.load(f)
+    assert cp.phase == "escalated"
+    assert cp.gate_failures == 2
+
+
+def test_gate_pass_does_not_reset_gate_failures(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=2).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "true"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "qa"
+    assert cp.gate_failures == 2
 
 
 from datetime import timezone, datetime, timedelta
@@ -797,6 +876,49 @@ def test_proposal_review_blocking_design_escalates(tmp_path):
     assert Checkpoint.load(cp_path).phase == "escalated"
 
 
+def test_proposal_review_blocking_proposal_increments_and_retries(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=1).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "unclear scope"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "propose"
+    assert cp.propose_attempts == 2
+
+
+def test_proposal_review_blocking_proposal_exceeds_max_escalates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=3).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "still unclear"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "escalated"
+    assert cp.propose_attempts == 4
+
+
+def test_proposal_review_blocking_proposal_respects_max_propose_flag(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=1).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "unclear scope"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report),
+               "--max-propose", "1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "escalated"
+    assert cp.propose_attempts == 2
+
+
 def test_legs_init_and_leg_done(tmp_path):
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b").save(cp_path)
@@ -932,3 +1054,31 @@ def test_finish_meta_overrides_config(tmp_path, capsys):
     main(["finish", "--file", str(cp_path), "--config", str(cfg),
           "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
     assert "finish: pr" in capsys.readouterr().out
+
+
+def test_finish_invalid_config_value_errors(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merg"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "invalid finish value" in captured.err
+    assert "finish: ask" not in captured.out
+
+
+def test_finish_invalid_meta_value_errors(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({"finish": "pull-request"}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 2
+    assert "invalid finish value" in capsys.readouterr().err

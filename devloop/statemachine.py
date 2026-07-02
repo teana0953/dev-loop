@@ -29,6 +29,11 @@ REVIEW_BLOCKING_CODE = "review_blocking_code"
 REVIEW_BLOCKING_PROPOSAL = "review_blocking_proposal"
 FIX_DONE = "fix_done"
 FINISH_DONE = "finish_done"
+PROPOSE_DONE = "propose_done"
+PROPOSE_RETRY_EXCEEDED = "propose_retry_exceeded"
+GATE_RETRY_EXCEEDED = "gate_retry_exceeded"
+HUMAN_RESUME_PROPOSE = "human_resume_propose"
+HUMAN_RESUME_FIX = "human_resume_fix"
 
 DEFAULT_MAX_ITERATIONS = 3
 
@@ -72,4 +77,14 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
         return ("gate", iteration)
     if phase == "merge" and event == FINISH_DONE:
         return ("done", iteration)
+    if phase == "propose" and event == PROPOSE_DONE:
+        return ("proposal_review", iteration)
+    if phase == "proposal_review" and event == PROPOSE_RETRY_EXCEEDED:
+        return ("escalated", iteration)
+    if phase == "gate" and event == GATE_RETRY_EXCEEDED:
+        return ("escalated", iteration)
+    if phase == "escalated" and event == HUMAN_RESUME_PROPOSE:
+        return ("propose", iteration)
+    if phase == "escalated" and event == HUMAN_RESUME_FIX:
+        return ("fix", iteration)
     raise InvalidTransition("no transition from %r on %r" % (phase, event))

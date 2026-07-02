@@ -10,9 +10,9 @@ from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
 from devloop.changemeta import is_serial, load_change_meta
+from devloop.checkpoint import Checkpoint
 from devloop.config import load_config, resolve_finish
 from devloop.finish import render_followup, write_followup
-from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
 from devloop.resume import plan_resume
@@ -21,9 +21,14 @@ from devloop.review import (
     non_blocking_notes, parse_review_report,
 )
 from devloop.statemachine import (
+    DEFAULT_MAX_ITERATIONS,
     GATE_FAIL,
     GATE_PASS,
-    DEFAULT_MAX_ITERATIONS,
+    GATE_RETRY_EXCEEDED,
+    HUMAN_RESUME_FIX,
+    HUMAN_RESUME_PROPOSE,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
     PHASES,
     transition,
@@ -62,6 +67,10 @@ def _apply_event(cp, event, max_iterations):
 def _cmd_event(args):
     cp = Checkpoint.load(args.file)
     cp = _apply_event(cp, args.event, args.max)
+    if args.event in (HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX):
+        cp.iteration = 0
+        cp.propose_attempts = 0
+        cp.gate_failures = 0
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
@@ -70,7 +79,11 @@ def _cmd_event(args):
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
     result = run_gate([shlex.split(c) for c in args.cmd], timeout=args.timeout)
-    event = GATE_PASS if result.passed else GATE_FAIL
+    if result.passed:
+        event = GATE_PASS
+    else:
+        cp.gate_failures += 1
+        event = GATE_RETRY_EXCEEDED if cp.gate_failures > args.max_gate else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     if not result.passed:
@@ -130,6 +143,10 @@ def _cmd_proposal_review(args):
     findings = parse_review_report(args.report)
     cp.non_blocking.extend(non_blocking_notes(findings))
     event = classify_proposal(findings)
+    if event == PROPOSE_BLOCKING_PROPOSAL:
+        cp.propose_attempts += 1
+        if cp.propose_attempts > args.max_propose:
+            event = PROPOSE_RETRY_EXCEEDED
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
@@ -235,7 +252,11 @@ def _cmd_finish(args):
     cp = Checkpoint.load(args.file)
     config = load_config(args.config)
     meta = load_change_meta(args.meta)
-    decision = resolve_finish(config, meta)
+    try:
+        decision = resolve_finish(config, meta)
+    except ValueError as exc:
+        print("error: invalid finish value %s" % exc, file=sys.stderr)
+        return 2
     print("finish: %s" % decision)
     if decision == "merge":
         if cp.non_blocking:
@@ -396,6 +417,7 @@ def build_parser():
     p_gate.add_argument("--file", required=True)
     p_gate.add_argument("--cmd", action="append", default=[])
     p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_gate.add_argument("--max-gate", dest="max_gate", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_gate.add_argument("--timeout", type=int, default=600)
     p_gate.set_defaults(func=_cmd_gate)
 
@@ -421,6 +443,7 @@ def build_parser():
     p_pr.add_argument("--file", required=True)
     p_pr.add_argument("--report", required=True)
     p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_pr.add_argument("--max-propose", dest="max_propose", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_pr.set_defaults(func=_cmd_proposal_review)
 
     p_li = sub.add_parser("legs-init")

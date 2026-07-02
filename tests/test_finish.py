@@ -7,6 +7,7 @@ def test_render_followup_lists_notes():
     assert "## Follow-up(non-blocking)" in out
     assert "- rename x" in out
     assert "- add docstring" in out
+    assert out.endswith("\n")
 
 
 def test_render_followup_empty():

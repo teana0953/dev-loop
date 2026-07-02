@@ -94,3 +94,32 @@ def test_load_legacy_checkpoint_without_units(tmp_path):
     loaded = Checkpoint.load(path)
     assert loaded.units == []
     assert loaded.review_legs == []
+
+
+def test_propose_attempts_and_gate_failures_default_zero():
+    cp = Checkpoint(phase="apply", change_id="c", branch="b")
+    assert cp.propose_attempts == 0
+    assert cp.gate_failures == 0
+
+
+def test_propose_attempts_and_gate_failures_roundtrip(tmp_path):
+    path = tmp_path / "cp.json"
+    cp = Checkpoint(phase="proposal_review", change_id="c", branch="b",
+                    propose_attempts=2, gate_failures=1)
+    cp.save(path)
+    loaded = Checkpoint.load(path)
+    assert loaded.propose_attempts == 2
+    assert loaded.gate_failures == 1
+
+
+def test_load_legacy_checkpoint_without_propose_attempts_or_gate_failures(tmp_path):
+    path = tmp_path / "legacy_v2.json"
+    path.write_text(json.dumps({
+        "phase": "apply", "change_id": "c", "branch": "b",
+        "iteration": 0, "last_artifact": "", "non_blocking": [],
+        "updated_at": "", "resume_exec": None,
+        "units": [], "review_legs": [],
+    }), encoding="utf-8")
+    loaded = Checkpoint.load(path)
+    assert loaded.propose_attempts == 0
+    assert loaded.gate_failures == 0
