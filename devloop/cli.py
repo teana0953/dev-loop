@@ -21,9 +21,11 @@ from devloop.review import (
     non_blocking_notes, parse_review_report,
 )
 from devloop.statemachine import (
+    DEFAULT_MAX_ITERATIONS,
     GATE_FAIL,
     GATE_PASS,
-    DEFAULT_MAX_ITERATIONS,
+    PROPOSE_BLOCKING_PROPOSAL,
+    PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
     PHASES,
     transition,
@@ -130,6 +132,10 @@ def _cmd_proposal_review(args):
     findings = parse_review_report(args.report)
     cp.non_blocking.extend(non_blocking_notes(findings))
     event = classify_proposal(findings)
+    if event == PROPOSE_BLOCKING_PROPOSAL:
+        cp.propose_attempts += 1
+        if cp.propose_attempts > args.max_propose:
+            event = PROPOSE_RETRY_EXCEEDED
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
@@ -421,6 +427,7 @@ def build_parser():
     p_pr.add_argument("--file", required=True)
     p_pr.add_argument("--report", required=True)
     p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_pr.add_argument("--max-propose", dest="max_propose", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_pr.set_defaults(func=_cmd_proposal_review)
 
     p_li = sub.add_parser("legs-init")

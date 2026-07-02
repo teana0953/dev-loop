@@ -797,6 +797,49 @@ def test_proposal_review_blocking_design_escalates(tmp_path):
     assert Checkpoint.load(cp_path).phase == "escalated"
 
 
+def test_proposal_review_blocking_proposal_increments_and_retries(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=1).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "unclear scope"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "propose"
+    assert cp.propose_attempts == 2
+
+
+def test_proposal_review_blocking_proposal_exceeds_max_escalates(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=3).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "still unclear"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report)])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "escalated"
+    assert cp.propose_attempts == 4
+
+
+def test_proposal_review_blocking_proposal_respects_max_propose_flag(tmp_path):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b",
+               propose_attempts=1).save(cp_path)
+    report = tmp_path / "pr.json"
+    report.write_text(json.dumps({"findings": [
+        {"severity": "blocking", "level": "proposal", "note": "unclear scope"}]}), encoding="utf-8")
+    rc = main(["proposal-review", "--file", str(cp_path), "--report", str(report),
+               "--max-propose", "1"])
+    assert rc == 0
+    cp = Checkpoint.load(cp_path)
+    assert cp.phase == "escalated"
+    assert cp.propose_attempts == 2
+
+
 def test_legs_init_and_leg_done(tmp_path):
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b").save(cp_path)
