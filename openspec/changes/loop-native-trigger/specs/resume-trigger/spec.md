@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: 寫 checkpoint 的子命令自動確保 watcher 在位
-所有會寫 checkpoint 的 CLI 子命令(`start`、`event`、`gate`、`proposal-review`、`qa`、`leg-done`、`review`、`units-init`、`unit-done`、`unit-claim`、`unit-resolve`、`units-merge`)SHALL 在 checkpoint 寫入成功後自動執行與 `arm-local` 相同的 idempotent watcher 確保邏輯,條件是 checkpoint 的 `resume_exec` 非空且 config `auto_arm` 為 true。`resume_exec` 為空時 SHALL 靜默跳過。
+所有會寫 checkpoint 的 CLI 子命令(現為 14 個:`start`、`event`、`gate`、`proposal-review`、`qa`、`legs-init`、`leg-done`、`review`、`units-init`、`unit-done`、`unit-claim`、`unit-resolve`、`units-merge`、`units-cleanup`;以「該子命令會呼叫 checkpoint save」為判準)SHALL 在 checkpoint 寫入成功後自動執行與 `arm-local` 相同的 idempotent watcher 確保邏輯(自動路徑 SHALL 不輸出到 stdout),條件是 checkpoint 的 `resume_exec` 非空且 config `auto_arm` 為 true。`resume_exec` 為空時 SHALL 靜默跳過。
 
 #### Scenario: gate 後自動 arm
 - **WHEN** checkpoint 有 `resume_exec`、config 無 `auto_arm` 鍵(預設 true),執行 `gate` 且無存活 watcher

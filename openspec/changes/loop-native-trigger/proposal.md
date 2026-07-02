@@ -4,7 +4,7 @@
 
 ## What Changes
 
-- **引擎自動 arm**:抽出 `ensure_armed()`;所有寫 checkpoint 的子命令(`start`/`event`/`gate`/`proposal-review`/`qa`/`leg-done`/`review`/`units-init`/`unit-done`/`unit-claim`/`unit-resolve`/`units-merge`)在 save 後、`resume_exec` 非空且 config `auto_arm` 為 true(預設)時自動確保 watcher 在位;arm 失敗僅 stderr 警告、不影響主命令 exit code。
+- **引擎自動 arm**:抽出 `ensure_armed()`;所有寫 checkpoint 的子命令(全部 14 個:`start`/`event`/`gate`/`proposal-review`/`qa`/`legs-init`/`leg-done`/`review`/`units-init`/`unit-done`/`unit-claim`/`unit-resolve`/`units-merge`/`units-cleanup`)在 save 後、`resume_exec` 非空且 config `auto_arm` 為 true(預設)時自動確保 watcher 在位;arm 失敗僅 stderr 警告、不影響主命令 exit code。
 - **config 新增 `auto_arm`**(預設 true);`arm-local` 子命令保留(手動補救)。
 - **`status` 新增 `next:` hint**:第二行輸出依 phase(與 units/legs 狀態)建議的下一步命令骨架;既有單行識別輸出不變。
 - **SKILL.md 重構成 loop 敘事**:核心迴圈改為「每回合:讀 checkpoint phase → 推進到卡點(✋/終態/token 邊界)→ 未終態則 ScheduleWakeup 排下回合(fallback ≥1200s)」;`/loop /dev-loop resume` 成為 harness 標準運行形態;刪除「每個 checkpoint 後 arm」整節;「Token 用罄續跑」縮寫為 watcher 兜底(自動)+ /loop 正職。
