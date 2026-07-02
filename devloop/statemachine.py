@@ -42,6 +42,58 @@ class InvalidTransition(Exception):
     """目前階段不接受該事件。"""
 
 
+# phase → next hint 產生器(規格 cli-status)。確定性步驟給命令骨架、
+# 判斷型步驟給 dispatch 說明、終態明確收束。
+_DETERMINISTIC_HINTS = {
+    "proposal_review":
+        lambda f: "next: python3 -m devloop.cli proposal-review --file %s --report <pr.json>" % f,
+    "gate":
+        lambda f: 'next: python3 -m devloop.cli gate --file %s --cmd "<test-cmd>" [--cmd "<lint-cmd>"]' % f,
+    "qa":
+        lambda f: "next: python3 -m devloop.cli qa --file %s --report <qa.json>" % f,
+    "review":
+        lambda f: "next: python3 -m devloop.cli review --file %s --from-legs" % f,
+    "merge":
+        lambda f: ("next: python3 -m devloop.cli finish --file %s "
+                    "--config <config.json> --meta <meta.json> --followup <followup.md>") % f,
+}
+
+_JUDGMENT_HINTS = {
+    "brainstorm": "next: dispatch brainstorming(產出設計文件,批准後 propose)",
+    "propose": "next: dispatch propose(建立 OpenSpec change,完成後 event --event propose_done)",
+    "apply": "next: dispatch apply(TDD 實作 tasks,完成後 event --event apply_done)",
+    "fix": "next: dispatch fix(處理 blocking 項,完成後 event --event fix_done)",
+}
+
+_TERMINAL_HINTS = {
+    "done": "next: (done)",
+    "escalated": ("next: (escalated)人工升級後續跑:event --event human_resume_propose "
+                  "或 human_resume_fix"),
+}
+
+
+def next_hint(phase, checkpoint_path, units=None, review_legs=None):
+    """依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。"""
+    if phase in ("apply", "fix") and units:
+        pending = [u["id"] for u in units if u.get("status") in ("pending", "in_progress")]
+        if pending:
+            return ("next: units pending: %s -> python3 -m devloop.cli units-status --file %s"
+                    % (",".join(pending), checkpoint_path))
+    if phase == "review" and review_legs:
+        pending_legs = [l["kind"] for l in review_legs if l.get("status") != "collected"]
+        if pending_legs:
+            return ("next: legs pending: %s -> python3 -m devloop.cli leg-done --file %s "
+                     "--kind <kind> --report <report.json>"
+                     % (",".join(pending_legs), checkpoint_path))
+    if phase in _TERMINAL_HINTS:
+        return _TERMINAL_HINTS[phase]
+    if phase in _DETERMINISTIC_HINTS:
+        return _DETERMINISTIC_HINTS[phase](checkpoint_path)
+    if phase in _JUDGMENT_HINTS:
+        return _JUDGMENT_HINTS[phase]
+    raise KeyError("no next hint for phase %r" % phase)
+
+
 def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
     """純函式狀態轉移。回傳 (new_phase, new_iteration)。
 

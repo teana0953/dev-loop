@@ -31,10 +31,24 @@ from devloop.statemachine import (
     PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
     PHASES,
+    next_hint,
     transition,
 )
 from devloop.units import build_units, mark, pending_units
 from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths, worktree_exists
+
+
+def _ensure_armed_after_save(cp, args):
+    """checkpoint save 後自動確保 watcher 在位。靜默,失敗僅 stderr 警告。"""
+    if not cp.resume_exec:
+        return
+    config = load_config(Path(args.file).parent / "config.json")
+    if not config.auto_arm:
+        return
+    try:
+        ensure_armed(args.file)
+    except Exception as exc:
+        print("warning: auto-arm failed: %s" % exc, file=sys.stderr)
 
 
 def _cmd_start(args):
@@ -45,6 +59,7 @@ def _cmd_start(args):
         resume_exec=args.resume_exec,
     )
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     return 0
 
 
@@ -54,6 +69,7 @@ def _cmd_status(args):
         "phase=%s iteration=%d change_id=%s branch=%s"
         % (cp.phase, cp.iteration, cp.change_id, cp.branch)
     )
+    print(next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs))
     return 0
 
 
@@ -72,6 +88,7 @@ def _cmd_event(args):
         cp.propose_attempts = 0
         cp.gate_failures = 0
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -86,6 +103,7 @@ def _cmd_gate(args):
         event = GATE_RETRY_EXCEEDED if cp.gate_failures > args.max_gate else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     if not result.passed:
         print("gate FAILED: %s" % result.failed_command)
         print(result.output)
@@ -123,6 +141,7 @@ def _cmd_review(args):
     event = classify(findings)
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -134,6 +153,7 @@ def _cmd_qa(args):
     event = classify_qa(findings)
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -149,6 +169,7 @@ def _cmd_proposal_review(args):
             event = PROPOSE_RETRY_EXCEEDED
     cp = _apply_event(cp, event, args.max)
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -158,6 +179,7 @@ def _cmd_legs_init(args):
     kinds = [k for k in args.kinds.split(",") if k]
     cp.review_legs = [{"kind": k, "status": "pending", "report": ""} for k in kinds]
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("legs-init: %d" % len(cp.review_legs))
     return 0
 
@@ -169,6 +191,7 @@ def _cmd_leg_done(args):
             leg["status"] = "collected"
             leg["report"] = args.report
             cp.save(args.file)
+            _ensure_armed_after_save(cp, args)
             print("leg-done: %s" % args.kind)
             return 0
     print("error: no leg %r" % args.kind, file=sys.stderr)
@@ -205,28 +228,42 @@ def _spawn_watcher(exec_command, heartbeat):
     return proc.pid
 
 
-def _cmd_arm_local(args):
-    cp = Checkpoint.load(args.file)
-    exec_str = args.exec or cp.resume_exec
+def ensure_armed(checkpoint_path, heartbeat=DEFAULT_HEARTBEAT, exec_override=None):
+    """idempotent 確保 watcher 在位。回傳 (status, info),不印字。
+
+    status ∈ "armed"(剛 spawn,info=pid)/ "already"(既存活,info=pid)/
+    "skipped"(無 resume 命令,info=None)。
+    """
+    cp = Checkpoint.load(checkpoint_path)
+    exec_str = exec_override or cp.resume_exec
     if not exec_str:
-        print(
-            "error: no resume command (checkpoint.resume_exec empty and no --exec)",
-            file=sys.stderr,
-        )
-        return 2
-    pid_path = Path(args.file).parent / "watcher.pid"
+        return ("skipped", None)
+    pid_path = Path(checkpoint_path).parent / "watcher.pid"
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text().strip())
         except ValueError:
             pid = None
         if pid is not None and _pid_alive(pid):
-            print("watcher already running (pid=%d)" % pid)
-            return 0
-    pid = _spawn_watcher(shlex.split(exec_str), args.heartbeat)
+            return ("already", pid)
+    pid = _spawn_watcher(shlex.split(exec_str), heartbeat)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(pid))
-    print("watcher armed (pid=%d)" % pid)
+    return ("armed", pid)
+
+
+def _cmd_arm_local(args):
+    status, info = ensure_armed(args.file, heartbeat=args.heartbeat, exec_override=args.exec)
+    if status == "skipped":
+        print(
+            "error: no resume command (checkpoint.resume_exec empty and no --exec)",
+            file=sys.stderr,
+        )
+        return 2
+    if status == "already":
+        print("watcher already running (pid=%d)" % info)
+        return 0
+    print("watcher armed (pid=%d)" % info)
     return 0
 
 
@@ -276,6 +313,7 @@ def _cmd_units_init(args):
     if is_serial(meta):
         cp.units = []
         cp.save(args.file)
+        _ensure_armed_after_save(cp, args)
         print("units-init: serial")
         return 0
     units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
@@ -285,6 +323,7 @@ def _cmd_units_init(args):
             add_worktree(args.repo, u["worktree"], u["branch"], base)
     cp.units = units
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("units-init: %d units" % len(units))
     return 0
 
@@ -305,6 +344,7 @@ def _cmd_unit_done(args):
         print("error: %s" % exc, file=sys.stderr)
         return 2
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("unit-done: %s" % args.id)
     return 0
 
@@ -317,6 +357,7 @@ def _cmd_unit_claim(args):
         print("error: %s" % exc, file=sys.stderr)
         return 2
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("unit-claim: %s" % args.id)
     return 0
 
@@ -338,6 +379,7 @@ def _cmd_units_merge(args):
         if not res.ok:
             conflicts.append(u["id"])
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     if conflicts:
         print("units-merge: conflict in %s" % ", ".join(conflicts))
         return 1
@@ -361,6 +403,7 @@ def _cmd_units_cleanup(args):
                            capture_output=True, text=True)
             removed += 1
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("units-cleanup: removed %d" % removed)
     return 0
 
@@ -378,6 +421,7 @@ def _cmd_unit_resolve(args):
     remove_worktree(args.repo, target["worktree"], target["branch"])
     target["status"] = "merged"
     cp.save(args.file)
+    _ensure_armed_after_save(cp, args)
     print("unit-resolve: %s merged" % args.id)
     return 0
 

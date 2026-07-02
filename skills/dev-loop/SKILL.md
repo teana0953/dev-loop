@@ -5,18 +5,27 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 # Dev-Loop
 
-形式化的 agent 開發 loop。判斷性步驟由本 skill 編排;確定性狀態交給 `devloop` 引擎 CLI(見 docs/superpowers/specs/2026-06-18-dev-loop-design.md)。
+形式化的 agent 開發 loop。判斷性步驟由本 skill 編排;確定性狀態交給 `devloop` 引擎 CLI(見 docs/superpowers/specs/2026-06-18-dev-loop-design.md)。續跑觸發是引擎自動兜底的基礎設施,不是本 skill 要記的事(見「Trigger(觸發器語義)」)。
 
 ## 設定
 
-- `trigger`:token 用罄續跑的觸發 adapter。`local`(預設,detached watcher)或 `harness`(用 ScheduleWakeup 原生排程)。見「Token 用罄續跑」。
+- `trigger`:token 用罄續跑的觸發語義。`local`(預設)或 `harness`。見「Trigger(觸發器語義)」。
 - `finish`:收尾策略 `merge`|`pr`|`ask`(未設等同 `ask`);可被 `.devloop/changes/<id>.json` 的 `finish` override。
+- `auto_arm`:布林,預設 true。false 時關閉引擎自動 arm(僅影響 auto-arm,`arm-local` 手動路徑不受影響)。一般不需要動這個鍵。
+
+## 核心迴圈
+
+無論是第一次啟動還是被觸發器續跑,每回合遵循同一套邏輯:
+
+1. **讀 phase**:有 checkpoint 就跑 `python3 -m devloop.cli status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動,從「流程」步驟 1 開始。
+2. **推進到卡點**:照 `next:` hint(或流程步驟)一路做到下一個卡點——✋ 人工批准點,或本回合 token/時間用盡。
+3. **未到終態則排程下一輪**:若 phase 還不是 `done` 或停等人工的 `escalated`,呼叫 `ScheduleWakeup` 排程下一輪(未知精準續跑時間時,fallback 間隔 ≥1200 秒);續跑觸發器本身(watcher/harness)已由引擎在每個 checkpoint 自動確保在位,`ScheduleWakeup` 是本回合這個 agent 主動排下一次冷啟動,兩者互補不衝突。
 
 ## 流程
 
 1. **Brainstorm(Opus)**:用 `/brainstorming` 產出設計文件。✋ 等使用者批准。
 2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
-3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。**啟動後立即 arm 觸發器**(見「每個 checkpoint 後 arm」)。
+3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。
 4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
    `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;✋ 此時等使用者批准提案。
@@ -62,23 +71,32 @@ phase 進到 `escalated` 的三種來源:proposal-review 判 design 層 blocking
 - `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_propose` → phase=propose,續跑步驟 2(重新 propose)。
 - `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_fix` → phase=fix,續跑步驟 9(直接修)。
 
-套用後記得依「每個 checkpoint 後 arm」重新確保續跑觸發器在位。
+## Resume(續跑)
 
-## 每個 checkpoint 後 arm
+冷啟動續跑(被 watcher 或 `/loop` 喚醒、或使用者說「dev-loop resume」)不需要記哪個 phase 對應哪個命令——跑一次 `status`,照第二行 `next:` 行動即可:
 
-每個會寫 checkpoint 的點(`start`、`event`、`gate`、`proposal-review`、`qa`、`leg-done`、`review`)之後,**確保續跑觸發器在位**——這是 token 用罄前的事前部署,缺它續跑就不會啟動。依 `trigger` 設定:
+```
+python3 -m devloop.cli status --file .devloop/checkpoint.json
+```
 
-- `trigger=local`(預設):`python3 -m devloop.cli arm-local --file .devloop/checkpoint.json`
-  - idempotent:watcher 已存活則 no-op,死了自癒重生。需 checkpoint 已有 `resume_exec`(於 `start` 帶入)。
-- `trigger=harness`:呼叫 `ScheduleWakeup`(一次性,故每 checkpoint 刷新一個),fire 時冷啟動跑續跑命令(如 `/dev-loop resume`)。
+- 第二行是完整命令骨架(如 `next: python3 -m devloop.cli gate --file ... --cmd "<test-cmd>"`)→ 依骨架補上實際參數執行。
+- 第二行是 `next: dispatch <說明>`(判斷型步驟,如 apply/fix/propose)→ 依「流程」對應步驟繼續判斷與 dispatch。
+- 第二行是 `next: (done)` → loop 已完成,無需動作。
+- 第二行是 `next: (escalated)…` → 走「escalated 升級與人工續跑」。
+- 若 units 有 pending 或 review legs 未收齊,`next:` 行會優先提示該未完成項(如 `units-status` 或缺 leg 報告),照做即可。
 
-`units-init`/`unit-done`/`units-merge` 之後同樣要確保觸發器在位(它們都寫 checkpoint)。
+## Trigger(觸發器語義)
+
+引擎在每個寫 checkpoint 的子命令 save 之後自動確保續跑觸發器在位(`resume_exec` 非空且 `auto_arm` 未關閉時),SKILL 不需要手動呼叫 `arm-local`。`trigger` 設定決定續跑機制的組成:
+
+| `trigger` | 續跑機制 |
+|---|---|
+| `local`(預設) | 只有 watcher:detached OS 程序週期重試 `resume_exec`,回 0 即停。 |
+| `harness` | watcher 兜底(引擎仍自動 arm,防止排程漏接)+ `/loop` 是續跑正職:harness 原生排程(`ScheduleWakeup`/`/loop`)精準續跑,watcher 只在排程失效時墊底。 |
 
 ## Token 用罄續跑
 
-續跑的核心是**每個 checkpoint 自動 arm**(見上),token 用罄當下觸發器已就位:reset 後它會週期重試續跑命令直到成功,被推進的 agent 在其首個 checkpoint 再次 arm,心跳自我延續。
-
-`arm-local` spawn 的 watcher 是獨立 OS 程序(不依賴被卡住的 agent):反覆執行 `resume_exec`,回 0 即停(loop 已推進),否則睡一個 heartbeat(預設 1800s,上限 3600s)再試。續跑命令從 checkpoint 的 phase 接著跑。
+續跑觸發器由引擎自動兜底(見「Trigger(觸發器語義)」),watcher 反覆執行 `resume_exec`(從 checkpoint 的 phase 接著跑),回 0 即停(loop 已推進),否則睡一個 heartbeat(預設 1800s,上限 3600s)再試;`start` 以 `--resume-exec` 把續跑命令寫進 checkpoint 是這一切的起點。
 
 **進階(已知 reset 時間想精準睡)**:
 - 一次性決策:`python3 -m devloop.cli resume --file .devloop/checkpoint.json --reset-at <ISO>` 回傳 ready / sleep_seconds / phase。

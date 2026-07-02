@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
 
@@ -42,6 +44,37 @@ def test_status_prints_phase_and_iteration(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "review" in out
     assert "2" in out
+
+
+def test_status_second_line_is_next_hint_for_gate(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "phase=gate" in lines[0]
+    assert lines[1].startswith("next: ")
+    assert "devloop.cli gate" in lines[1]
+
+
+def test_status_next_hint_prioritizes_pending_units(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "done"},
+                      {"id": "g2", "status": "pending"}]).save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "g2" in lines[1] or "units-status" in lines[1]
+
+
+def test_status_next_hint_terminal_done(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="done", change_id="c", branch="b").save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "next: (done)"
 
 
 def test_event_advances_and_persists(tmp_path):
@@ -505,6 +538,76 @@ def test_arm_local_spawns_real_watcher(tmp_path):
             os.waitpid(pid, 0)  # reap,避免遺留 zombie
         except OSError:
             pass
+
+
+def test_ensure_armed_spawns_when_no_pidfile(tmp_path, monkeypatch, capsys):
+    # ensure_armed 是從 _cmd_arm_local 抽出的核心函式:回傳結果,不印字。
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="a b").save(f)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 4242)
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "armed"
+    assert info == 4242
+    assert (f.parent / "watcher.pid").read_text().strip() == "4242"
+    assert capsys.readouterr().out == ""
+
+
+def test_ensure_armed_already_when_watcher_alive(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    (f.parent / "watcher.pid").write_text("999")
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "already"
+    assert info == 999
+
+
+def test_ensure_armed_skipped_without_exec(tmp_path, capsys):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+
+    status, info = cli.ensure_armed(str(f))
+    assert status == "skipped"
+    assert capsys.readouterr().out == ""
+
+
+def test_ensure_armed_exec_override(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
+    captured = {}
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (captured.update(cmd=cmd), 7)[1])
+
+    status, info = cli.ensure_armed(str(f), exec_override="true")
+    assert status == "armed"
+    assert captured["cmd"] == ["true"]
+
+
+def test_arm_local_is_thin_shell_over_ensure_armed(tmp_path, monkeypatch):
+    # arm-local 殼呼叫 ensure_armed,自己只管 stdout。
+    import devloop.cli as cli
+
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
+    calls = []
+
+    def fake_ensure_armed(checkpoint_path, heartbeat=30, exec_override=None):
+        calls.append((checkpoint_path, heartbeat, exec_override))
+        return ("armed", 321)
+
+    monkeypatch.setattr(cli, "ensure_armed", fake_ensure_armed)
+    code = cli.main(["arm-local", "--file", str(f)])
+    assert code == 0
+    assert calls == [(str(f), cli.DEFAULT_HEARTBEAT, None)]
 
 
 def test_status_shows_change_id_and_branch(tmp_path, capsys):
@@ -1082,3 +1185,227 @@ def test_finish_invalid_meta_value_errors(tmp_path, capsys):
                "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
     assert rc == 2
     assert "invalid finish value" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# task 1.3: 14 個寫 checkpoint 的子命令 save 後自動 arm
+# ---------------------------------------------------------------------------
+
+_AUTO_ARM_COMMANDS = [
+    "start", "event", "gate", "proposal-review", "qa", "legs-init",
+    "leg-done", "review", "units-init", "unit-done", "unit-claim",
+    "unit-resolve", "units-merge", "units-cleanup",
+]
+
+
+def _auto_arm_case(cmd, tmp_path):
+    """回傳 (argv, cp_path):以 resume_exec="true" 建置該子命令最小可執行情境。"""
+    if cmd == "start":
+        cp_path = tmp_path / "cp.json"
+        argv = ["start", "--file", str(cp_path), "--change-id", "c",
+                "--branch", "b", "--resume-exec", "true"]
+        return argv, cp_path
+
+    if cmd == "event":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true").save(cp_path)
+        return ["event", "--file", str(cp_path), "--event", "apply_done"], cp_path
+
+    if cmd == "gate":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="gate", change_id="c", branch="b", resume_exec="true").save(cp_path)
+        return ["gate", "--file", str(cp_path), "--cmd", "true"], cp_path
+
+    if cmd == "proposal-review":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="proposal_review", change_id="c", branch="b", resume_exec="true").save(cp_path)
+        report = tmp_path / "pr.json"
+        report.write_text(json.dumps({"findings": []}), encoding="utf-8")
+        return ["proposal-review", "--file", str(cp_path), "--report", str(report)], cp_path
+
+    if cmd == "qa":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="qa", change_id="c", branch="b", resume_exec="true").save(cp_path)
+        report = tmp_path / "qa.json"
+        report.write_text(json.dumps({"findings": []}), encoding="utf-8")
+        return ["qa", "--file", str(cp_path), "--report", str(report)], cp_path
+
+    if cmd == "legs-init":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="review", change_id="c", branch="b", resume_exec="true").save(cp_path)
+        return ["legs-init", "--file", str(cp_path), "--kinds", "code"], cp_path
+
+    if cmd == "leg-done":
+        cp_path = tmp_path / "cp.json"
+        cp = Checkpoint(phase="review", change_id="c", branch="b", resume_exec="true")
+        cp.review_legs = [{"kind": "code", "status": "pending", "report": ""}]
+        cp.save(cp_path)
+        return ["leg-done", "--file", str(cp_path), "--kind", "code", "--report", "/tmp/c.json"], cp_path
+
+    if cmd == "review":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="review", change_id="c", branch="b", iteration=1, resume_exec="true").save(cp_path)
+        report = tmp_path / "r.json"
+        report.write_text(json.dumps({"findings": []}), encoding="utf-8")
+        return ["review", "--file", str(cp_path), "--report", str(report)], cp_path
+
+    if cmd == "units-init":
+        repo = _repo(tmp_path)
+        cp_path = repo / ".devloop/checkpoint.json"
+        Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true").save(cp_path)
+        meta = repo / ".devloop/changes/c.json"
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        meta.write_text(json.dumps({"parallel_groups": []}), encoding="utf-8")
+        argv = ["units-init", "--file", str(cp_path), "--repo", str(repo),
+                "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")]
+        return argv, cp_path
+
+    if cmd == "unit-done":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true",
+                   units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+        return ["unit-done", "--file", str(cp_path), "--id", "g1"], cp_path
+
+    if cmd == "unit-claim":
+        cp_path = tmp_path / "cp.json"
+        Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true",
+                   units=[{"id": "g1", "status": "pending"}]).save(cp_path)
+        return ["unit-claim", "--file", str(cp_path), "--id", "g1"], cp_path
+
+    if cmd == "unit-resolve":
+        from devloop.worktree import add_worktree
+        repo = _repo(tmp_path)
+        _git(repo, "checkout", "-b", "loop/x")
+        wt = repo / ".devloop/wt/g1"
+        add_worktree(repo, wt, "loop/x-g1", "loop/x")
+        cp_path = repo / ".devloop/checkpoint.json"
+        cp = Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true")
+        cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "conflict"}]
+        cp.save(cp_path)
+        argv = ["unit-resolve", "--file", str(cp_path), "--repo", str(repo), "--id", "g1"]
+        return argv, cp_path
+
+    if cmd == "units-merge":
+        from devloop.worktree import add_worktree
+        repo = _repo(tmp_path)
+        _git(repo, "checkout", "-b", "loop/x")
+        cp_path = repo / ".devloop/checkpoint.json"
+        Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true").save(cp_path)
+        wt = repo / ".devloop/wt/g1"
+        add_worktree(repo, wt, "loop/x-g1", "loop/x")
+        (wt / "g1.txt").write_text("g1\n")
+        _git(wt, "add", "."); _git(wt, "commit", "-m", "g1")
+        cp = Checkpoint.load(cp_path)
+        cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "done"}]
+        cp.save(cp_path)
+        argv = ["units-merge", "--file", str(cp_path), "--repo", str(repo)]
+        return argv, cp_path
+
+    if cmd == "units-cleanup":
+        from devloop.worktree import add_worktree
+        repo = _repo(tmp_path)
+        _git(repo, "checkout", "-b", "loop/x")
+        wt = repo / ".devloop/wt/g1"
+        add_worktree(repo, wt, "loop/x-g1", "loop/x")
+        cp_path = repo / ".devloop/checkpoint.json"
+        cp = Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true")
+        cp.units = [{"id": "g1", "worktree": str(wt), "branch": "loop/x-g1", "status": "merged"}]
+        cp.save(cp_path)
+        argv = ["units-cleanup", "--file", str(cp_path), "--repo", str(repo),
+                "--wt-root", str(repo / ".devloop/wt")]
+        return argv, cp_path
+
+    raise ValueError("no case for %r" % cmd)
+
+
+@pytest.mark.parametrize("cmd", _AUTO_ARM_COMMANDS)
+def test_auto_arm_after_checkpoint_save(cmd, tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: (spawned.append(c), 9999)[1])
+    argv, cp_path = _auto_arm_case(cmd, tmp_path)
+
+    main(argv)
+
+    assert spawned, "cmd=%s 未 spawn watcher" % cmd
+    assert (cp_path.parent / "watcher.pid").read_text().strip() == "9999", cmd
+
+
+def test_auto_arm_units_init_parallel_path_also_arms(tmp_path, monkeypatch):
+    # units-init 有兩個 cp.save 呼叫點(serial 早返 / 平行主路徑),兩者都要 auto-arm。
+    import devloop.cli as cli
+
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: (spawned.append(c), 8888)[1])
+    repo = _repo(tmp_path)
+    cp_path = repo / ".devloop/checkpoint.json"
+    Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true").save(cp_path)
+    meta = repo / ".devloop/changes/c.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"parallel_groups": [
+        {"id": "g1", "tasks": ["1"], "files_hint": ["a/"]},
+        {"id": "g2", "tasks": ["2"], "files_hint": ["b/"]},
+    ]}), encoding="utf-8")
+    rc = main(["units-init", "--file", str(cp_path), "--repo", str(repo),
+               "--meta", str(meta), "--wt-root", str(repo / ".devloop/wt")])
+    assert rc == 0
+    assert spawned
+    assert (cp_path.parent / "watcher.pid").read_text().strip() == "8888"
+
+
+def test_auto_arm_skips_silently_when_resume_exec_empty(tmp_path, monkeypatch, capsys):
+    import devloop.cli as cli
+
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b").save(cp_path)  # resume_exec=None
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: spawned.append(c) or 1)
+
+    rc = main(["event", "--file", str(cp_path), "--event", "apply_done"])
+    assert rc == 0
+    assert spawned == []
+    assert not (cp_path.parent / "watcher.pid").exists()
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "phase=gate" in captured.out
+
+
+def test_auto_arm_disabled_by_config(tmp_path, monkeypatch):
+    import devloop.cli as cli
+
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", resume_exec="true").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"auto_arm": False}), encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: spawned.append(c) or 1)
+
+    rc = main(["gate", "--file", str(cp_path), "--cmd", "true"])
+    assert rc == 0
+    assert spawned == []
+    assert not (cp_path.parent / "watcher.pid").exists()
+    # arm-local 手動路徑不受 auto_arm=false 影響
+    rc2 = main(["arm-local", "--file", str(cp_path)])
+    assert rc2 == 0
+    assert spawned == [["true"]]
+
+
+def test_auto_arm_failure_warns_but_does_not_change_exit_code_or_stdout(tmp_path, monkeypatch, capsys):
+    # task 1.4:auto-arm spawn 失敗只 stderr warning,exit 0 該 exit 0 的主命令不受影響。
+    import devloop.cli as cli
+
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true").save(cp_path)
+
+    def boom(cmd, hb):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(cli, "_spawn_watcher", boom)
+
+    rc = main(["event", "--file", str(cp_path), "--event", "apply_done"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "phase=gate" in captured.out
+    assert captured.err.startswith("warning: auto-arm failed") or "warning: auto-arm failed" in captured.err
+    assert Checkpoint.load(cp_path).phase == "gate"
