@@ -9,6 +9,7 @@ from devloop.statemachine import (
     GATE_RETRY_EXCEEDED,
     HUMAN_RESUME_FIX,
     HUMAN_RESUME_PROPOSE,
+    PHASES,
     PROPOSE_BLOCKING_DESIGN,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_CLEAN,
@@ -20,6 +21,7 @@ from devloop.statemachine import (
     REVIEW_BLOCKING_PROPOSAL,
     REVIEW_NO_BLOCKING,
     InvalidTransition,
+    next_hint,
     transition,
 )
 
@@ -149,3 +151,83 @@ def test_human_resume_fix_rejected_outside_escalated():
 def test_human_resume_propose_rejected_outside_escalated():
     with pytest.raises(InvalidTransition):
         transition("qa", 1, HUMAN_RESUME_PROPOSE)
+
+
+# ---------------------------------------------------------------------------
+# next_hint(task 2.1/2.2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_next_hint_covers_every_phase(phase):
+    hint = next_hint(phase, "/x/.devloop/checkpoint.json")
+    assert hint.startswith("next: ")
+    assert hint != "next: "
+
+
+def test_next_hint_gate_gives_command_skeleton():
+    hint = next_hint("gate", "/x/.devloop/checkpoint.json")
+    assert hint.startswith("next: ")
+    assert "devloop.cli gate" in hint
+    assert "/x/.devloop/checkpoint.json" in hint
+
+
+def test_next_hint_qa_gives_command_skeleton():
+    hint = next_hint("qa", "/x/cp.json")
+    assert "devloop.cli qa" in hint
+
+
+def test_next_hint_review_gives_command_skeleton():
+    hint = next_hint("review", "/x/cp.json")
+    assert "devloop.cli review" in hint
+
+
+def test_next_hint_merge_gives_finish_skeleton():
+    hint = next_hint("merge", "/x/cp.json")
+    assert "devloop.cli finish" in hint
+
+
+def test_next_hint_judgment_phases_use_dispatch():
+    for phase in ("brainstorm", "propose", "apply", "fix"):
+        hint = next_hint(phase, "/x/cp.json")
+        assert "dispatch" in hint
+
+
+def test_next_hint_done_is_explicit_terminal():
+    assert next_hint("done", "/x/cp.json") == "next: (done)"
+
+
+def test_next_hint_escalated_is_explicit_terminal():
+    hint = next_hint("escalated", "/x/cp.json")
+    assert "escalated" in hint
+    assert "human_resume" in hint
+
+
+def test_next_hint_apply_with_pending_units_prioritized():
+    units = [
+        {"id": "g1", "status": "done"},
+        {"id": "g2", "status": "pending"},
+    ]
+    hint = next_hint("apply", "/x/cp.json", units=units)
+    assert "g2" in hint or "units-status" in hint
+
+
+def test_next_hint_apply_without_pending_units_falls_back_to_dispatch():
+    units = [{"id": "g1", "status": "merged"}]
+    hint = next_hint("apply", "/x/cp.json", units=units)
+    assert "dispatch" in hint
+
+
+def test_next_hint_review_with_pending_legs_prioritized():
+    legs = [
+        {"kind": "code", "status": "collected", "report": "c.json"},
+        {"kind": "uiux", "status": "pending", "report": ""},
+    ]
+    hint = next_hint("review", "/x/cp.json", review_legs=legs)
+    assert "uiux" in hint
+    assert "leg-done" in hint
+
+
+def test_next_hint_review_with_all_legs_collected_gives_review_command():
+    legs = [{"kind": "code", "status": "collected", "report": "c.json"}]
+    hint = next_hint("review", "/x/cp.json", review_legs=legs)
+    assert "devloop.cli review" in hint
