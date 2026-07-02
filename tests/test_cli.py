@@ -46,6 +46,37 @@ def test_status_prints_phase_and_iteration(tmp_path, capsys):
     assert "2" in out
 
 
+def test_status_second_line_is_next_hint_for_gate(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "phase=gate" in lines[0]
+    assert lines[1].startswith("next: ")
+    assert "devloop.cli gate" in lines[1]
+
+
+def test_status_next_hint_prioritizes_pending_units(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b",
+               units=[{"id": "g1", "status": "done"},
+                      {"id": "g2", "status": "pending"}]).save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "g2" in lines[1] or "units-status" in lines[1]
+
+
+def test_status_next_hint_terminal_done(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="done", change_id="c", branch="b").save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "next: (done)"
+
+
 def test_event_advances_and_persists(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="apply", change_id="c", branch="b").save(f)

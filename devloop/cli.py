@@ -31,6 +31,7 @@ from devloop.statemachine import (
     PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
     PHASES,
+    next_hint,
     transition,
 )
 from devloop.units import build_units, mark, pending_units
@@ -68,6 +69,7 @@ def _cmd_status(args):
         "phase=%s iteration=%d change_id=%s branch=%s"
         % (cp.phase, cp.iteration, cp.change_id, cp.branch)
     )
+    print(next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs))
     return 0
 
 

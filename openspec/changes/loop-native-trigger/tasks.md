@@ -7,8 +7,8 @@
 
 ## 2. status next hint
 
-- [ ] 2.1 TDD:`status` 第二行輸出 `next: ` hint——phase→hint 查表(確定性步驟給命令骨架、判斷型給 dispatch 說明、done/escalated 明確收束);窮舉測試 `PHASES` 每成員都有 hint
-- [ ] 2.2 TDD:units 有 pending / legs 未收齊時優先提示;既有第一行輸出與 exit 0 契約回歸測試
+- [x] 2.1 TDD:`status` 第二行輸出 `next: ` hint——phase→hint 查表(確定性步驟給命令骨架、判斷型給 dispatch 說明、done/escalated 明確收束);窮舉測試 `PHASES` 每成員都有 hint
+- [x] 2.2 TDD:units 有 pending / legs 未收齊時優先提示;既有第一行輸出與 exit 0 契約回歸測試
 
 ## 3. SKILL loop 敘事重構
 
