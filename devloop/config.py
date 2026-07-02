@@ -22,10 +22,20 @@ def load_config(path) -> Config:
     )
 
 
+VALID_FINISH_VALUES = ("merge", "pr", "ask")
+
+
 def resolve_finish(config, meta) -> str:
-    """決定收尾策略:change metadata 的 finish override 全域 config;皆無 → ask。"""
+    """決定收尾策略:change metadata 的 finish override 全域 config;皆無 → ask。
+
+    無效值(非 merge/pr/ask/None)視為設定錯誤,拋 ValueError(值本身)。
+    """
     if meta.finish is not None:
-        return meta.finish
-    if config.finish is not None:
-        return config.finish
-    return "ask"
+        decision = meta.finish
+    elif config.finish is not None:
+        decision = config.finish
+    else:
+        decision = "ask"
+    if decision not in VALID_FINISH_VALUES:
+        raise ValueError(decision)
+    return decision

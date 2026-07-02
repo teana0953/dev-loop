@@ -252,7 +252,11 @@ def _cmd_finish(args):
     cp = Checkpoint.load(args.file)
     config = load_config(args.config)
     meta = load_change_meta(args.meta)
-    decision = resolve_finish(config, meta)
+    try:
+        decision = resolve_finish(config, meta)
+    except ValueError as exc:
+        print("error: invalid finish value %s" % exc, file=sys.stderr)
+        return 2
     print("finish: %s" % decision)
     if decision == "merge":
         if cp.non_blocking:

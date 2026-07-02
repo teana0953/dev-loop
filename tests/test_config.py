@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from devloop.config import Config, load_config, resolve_finish
 from devloop.changemeta import ChangeMeta
 
@@ -40,3 +42,19 @@ def test_resolve_falls_back_to_config():
 
 def test_resolve_defaults_to_ask():
     assert resolve_finish(Config(), ChangeMeta()) == "ask"
+
+
+def test_resolve_accepts_merge_pr_ask():
+    assert resolve_finish(Config(finish="merge"), ChangeMeta()) == "merge"
+    assert resolve_finish(Config(finish="pr"), ChangeMeta()) == "pr"
+    assert resolve_finish(Config(finish="ask"), ChangeMeta()) == "ask"
+
+
+def test_resolve_invalid_config_value_raises():
+    with pytest.raises(ValueError):
+        resolve_finish(Config(finish="merg"), ChangeMeta())
+
+
+def test_resolve_invalid_meta_value_raises():
+    with pytest.raises(ValueError):
+        resolve_finish(Config(finish="merge"), ChangeMeta(finish="pull-request"))

@@ -1054,3 +1054,31 @@ def test_finish_meta_overrides_config(tmp_path, capsys):
     main(["finish", "--file", str(cp_path), "--config", str(cfg),
           "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
     assert "finish: pr" in capsys.readouterr().out
+
+
+def test_finish_invalid_config_value_errors(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merg"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "invalid finish value" in captured.err
+    assert "finish: ask" not in captured.out
+
+
+def test_finish_invalid_meta_value_errors(tmp_path, capsys):
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({"finish": "pull-request"}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 2
+    assert "invalid finish value" in capsys.readouterr().err
