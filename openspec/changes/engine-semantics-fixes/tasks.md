@@ -10,7 +10,7 @@
 
 - [x] 3.1 TDD:`_cmd_proposal_review` — blocking(proposal) 時 `propose_attempts += 1`;超過 `--max-propose`(預設 3)改套用 `propose_retry_exceeded` → escalated
 - [x] 3.2 TDD:`_cmd_gate` — 失敗時 `gate_failures += 1`;超過 `--max-gate`(預設 3)改套用 `gate_retry_exceeded` → escalated(仍印失敗輸出、exit 1);gate_pass 不重置計數
-- [ ] 3.3 TDD:`_cmd_event` — `human_resume_propose`/`human_resume_fix` 套用成功後歸零 `iteration`/`propose_attempts`/`gate_failures`
+- [x] 3.3 TDD:`_cmd_event` — `human_resume_propose`/`human_resume_fix` 套用成功後歸零 `iteration`/`propose_attempts`/`gate_failures`
 
 ## 4. finish 驗證與小項
 

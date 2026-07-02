@@ -68,6 +68,45 @@ def test_event_escalates_when_over_limit(tmp_path):
     assert Checkpoint.load(f).phase == "escalated"
 
 
+def test_event_human_resume_propose_zeroes_counters(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="escalated", change_id="c", branch="b",
+               iteration=4, propose_attempts=4, gate_failures=2).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_propose"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "propose"
+    assert cp.iteration == 0
+    assert cp.propose_attempts == 0
+    assert cp.gate_failures == 0
+
+
+def test_event_human_resume_fix_zeroes_counters(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="escalated", change_id="c", branch="b",
+               iteration=4, propose_attempts=1, gate_failures=4).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_fix"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "fix"
+    assert cp.iteration == 0
+    assert cp.propose_attempts == 0
+    assert cp.gate_failures == 0
+
+
+def test_event_human_resume_fix_rejected_outside_escalated(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b",
+               iteration=1, propose_attempts=1, gate_failures=1).save(f)
+    code = main(["event", "--file", str(f), "--event", "human_resume_fix"])
+    assert code == 2
+    cp = Checkpoint.load(f)
+    assert cp.phase == "review"
+    assert cp.iteration == 1
+    assert cp.propose_attempts == 1
+    assert cp.gate_failures == 1
+
+
 def test_gate_subcommand_exit_code(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b").save(f)

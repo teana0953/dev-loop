@@ -25,6 +25,8 @@ from devloop.statemachine import (
     GATE_FAIL,
     GATE_PASS,
     GATE_RETRY_EXCEEDED,
+    HUMAN_RESUME_FIX,
+    HUMAN_RESUME_PROPOSE,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_RETRY_EXCEEDED,
     InvalidTransition,
@@ -65,6 +67,10 @@ def _apply_event(cp, event, max_iterations):
 def _cmd_event(args):
     cp = Checkpoint.load(args.file)
     cp = _apply_event(cp, args.event, args.max)
+    if args.event in (HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX):
+        cp.iteration = 0
+        cp.propose_attempts = 0
+        cp.gate_failures = 0
     cp.save(args.file)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
