@@ -6,9 +6,14 @@ from devloop.statemachine import (
     FIX_DONE,
     GATE_FAIL,
     GATE_PASS,
+    GATE_RETRY_EXCEEDED,
+    HUMAN_RESUME_FIX,
+    HUMAN_RESUME_PROPOSE,
     PROPOSE_BLOCKING_DESIGN,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_CLEAN,
+    PROPOSE_DONE,
+    PROPOSE_RETRY_EXCEEDED,
     QA_FAIL,
     QA_PASS,
     REVIEW_BLOCKING_CODE,
@@ -99,3 +104,48 @@ def test_merge_only_accepts_finish_done():
 def test_done_is_terminal():
     with pytest.raises(InvalidTransition):
         transition("done", 2, FINISH_DONE)
+
+
+def test_propose_done_returns_to_proposal_review():
+    assert transition("propose", 1, PROPOSE_DONE) == ("proposal_review", 1)
+
+
+def test_propose_done_rejected_outside_propose():
+    with pytest.raises(InvalidTransition):
+        transition("apply", 1, PROPOSE_DONE)
+
+
+def test_propose_retry_exceeded_escalates():
+    assert transition("proposal_review", 1, PROPOSE_RETRY_EXCEEDED) == ("escalated", 1)
+
+
+def test_propose_retry_exceeded_rejected_outside_proposal_review():
+    with pytest.raises(InvalidTransition):
+        transition("propose", 1, PROPOSE_RETRY_EXCEEDED)
+
+
+def test_gate_retry_exceeded_escalates():
+    assert transition("gate", 3, GATE_RETRY_EXCEEDED) == ("escalated", 3)
+
+
+def test_gate_retry_exceeded_rejected_outside_gate():
+    with pytest.raises(InvalidTransition):
+        transition("fix", 1, GATE_RETRY_EXCEEDED)
+
+
+def test_human_resume_propose_from_escalated():
+    assert transition("escalated", 4, HUMAN_RESUME_PROPOSE) == ("propose", 4)
+
+
+def test_human_resume_fix_from_escalated():
+    assert transition("escalated", 4, HUMAN_RESUME_FIX) == ("fix", 4)
+
+
+def test_human_resume_fix_rejected_outside_escalated():
+    with pytest.raises(InvalidTransition):
+        transition("review", 1, HUMAN_RESUME_FIX)
+
+
+def test_human_resume_propose_rejected_outside_escalated():
+    with pytest.raises(InvalidTransition):
+        transition("qa", 1, HUMAN_RESUME_PROPOSE)

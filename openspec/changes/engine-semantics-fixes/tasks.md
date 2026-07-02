@@ -1,6 +1,6 @@
 ## 1. 狀態機轉移表
 
-- [ ] 1.1 TDD:`statemachine.py` 新增 5 個 event 常數與轉移分支(`propose_done`、`propose_retry_exceeded`、`gate_retry_exceeded`、`human_resume_propose`、`human_resume_fix`);單測覆蓋每條新轉移 + 非法 phase 的 InvalidTransition 邊界
+- [x] 1.1 TDD:`statemachine.py` 新增 5 個 event 常數與轉移分支(`propose_done`、`propose_retry_exceeded`、`gate_retry_exceeded`、`human_resume_propose`、`human_resume_fix`);單測覆蓋每條新轉移 + 非法 phase 的 InvalidTransition 邊界
 
 ## 2. checkpoint 欄位
 
