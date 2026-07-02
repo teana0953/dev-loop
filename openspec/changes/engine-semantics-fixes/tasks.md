@@ -15,7 +15,7 @@
 ## 4. finish 驗證與小項
 
 - [x] 4.1 TDD:`resolve_finish` 對非 `{merge, pr, ask, None}` 拋 ValueError;cli `finish` 捕捉印 `error: invalid finish value <v>` exit 2;合法值行為不變
-- [ ] 4.2 小項:`render_followup` 補 trailing newline(調整既有斷言);cli.py import 順序整理;全套測試綠
+- [x] 4.2 小項:`render_followup` 補 trailing newline(調整既有斷言);cli.py import 順序整理;全套測試綠
 
 ## 5. SKILL 源頭同步
 

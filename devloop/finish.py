@@ -8,7 +8,7 @@ def render_followup(notes) -> str:
         return ""
     lines = ["## Follow-up(non-blocking)", ""]
     lines.extend("- " + n for n in notes)
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 def write_followup(path, notes) -> None:

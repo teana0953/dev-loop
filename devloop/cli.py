@@ -10,9 +10,9 @@ from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
 from devloop.changemeta import is_serial, load_change_meta
+from devloop.checkpoint import Checkpoint
 from devloop.config import load_config, resolve_finish
 from devloop.finish import render_followup, write_followup
-from devloop.checkpoint import Checkpoint
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
 from devloop.resume import plan_resume
