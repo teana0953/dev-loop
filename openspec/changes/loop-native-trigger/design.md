@@ -29,7 +29,7 @@
 
 ## Risks / Trade-offs
 
-- [12 個子命令都要掛 helper,易漏] → 測試逐命令參數化驗證「save 後 armed」;review leg 對照清單。
+- [14 個子命令都要掛 helper,易漏] → 測試逐命令參數化驗證「save 後 armed」;review leg 對照清單。
 - [測試環境不能真 spawn] → `ensure_armed` 依既有 `_spawn_watcher`/`_pid_alive` 可注入替身;沿 test_cli.py 既有 monkeypatch 慣例。
 - [status hint 表未來 phase 演化要同步維護] → 表放 statemachine 常數旁,加窮舉測試(每個 PHASES 成員都有 hint 或明確豁免)。
 
