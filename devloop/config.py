@@ -9,6 +9,7 @@ from pathlib import Path
 class Config:
     trigger: str = "local"
     finish: str | None = None
+    auto_arm: bool = True
 
 
 def load_config(path) -> Config:
@@ -19,6 +20,7 @@ def load_config(path) -> Config:
     return Config(
         trigger=data.get("trigger", "local"),
         finish=data.get("finish", None),
+        auto_arm=bool(data.get("auto_arm", True)),
     )
 
 

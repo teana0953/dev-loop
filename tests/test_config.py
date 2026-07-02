@@ -28,6 +28,25 @@ def test_partial_file_fills_defaults(tmp_path):
     assert cfg.finish == "merge"
 
 
+def test_missing_file_defaults_auto_arm_true(tmp_path):
+    cfg = load_config(tmp_path / "nope.json")
+    assert cfg.auto_arm is True
+
+
+def test_missing_key_defaults_auto_arm_true(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.auto_arm is True
+
+
+def test_loads_auto_arm_false(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"auto_arm": False}), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.auto_arm is False
+
+
 def test_resolve_meta_overrides_config():
     cfg = Config(finish="merge")
     meta = ChangeMeta(finish="pr")
