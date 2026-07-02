@@ -2,7 +2,7 @@
 
 - [x] 1.1 TDD:從 `_cmd_arm_local` 抽出 `ensure_armed(checkpoint_path, heartbeat, …)`(注入 spawn/pid-alive 替身);`arm-local` 改薄殼,既有 arm-local 測試全綠
 - [x] 1.2 TDD:`config.py` 支援 `auto_arm` 讀取(缺檔/缺鍵預設 true)
-- [ ] 1.3 TDD:14 個寫 checkpoint 的子命令(`start`/`event`/`gate`/`proposal-review`/`qa`/`legs-init`/`leg-done`/`review`/`units-init`/`unit-done`/`unit-claim`/`unit-resolve`/`units-merge`/`units-cleanup`)save 後自動 arm——參數化測試逐命令驗證(清單以 grep cp.save 對賬);`resume_exec` 空靜默跳過;`auto_arm=false` 不 arm
+- [x] 1.3 TDD:14 個寫 checkpoint 的子命令(`start`/`event`/`gate`/`proposal-review`/`qa`/`legs-init`/`leg-done`/`review`/`units-init`/`unit-done`/`unit-claim`/`unit-resolve`/`units-merge`/`units-cleanup`)save 後自動 arm——參數化測試逐命令驗證(清單以 grep cp.save 對賬);`resume_exec` 空靜默跳過;`auto_arm=false` 不 arm
 - [ ] 1.4 TDD:auto-arm 失敗僅 stderr `warning: auto-arm failed`,主命令 stdout/exit code 不變
 
 ## 2. status next hint
