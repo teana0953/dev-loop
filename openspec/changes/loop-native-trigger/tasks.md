@@ -13,4 +13,4 @@
 ## 3. SKILL loop 敘事重構
 
 - [x] 3.1 `skills/dev-loop/SKILL.md`:核心迴圈改寫成「每回合讀 phase → 推進到卡點 → 未終態則 ScheduleWakeup(fallback ≥1200s)」;刪「每個 checkpoint 後 arm」整節;「Token 用罄續跑」縮寫為 watcher 兜底(引擎自動)+ /loop 正職;`trigger` 語義表(local=watcher only、harness=watcher 兜底+/loop 正職);resume 節改為「跑 `status` 照 `next:` 行動」
-- [ ] 3.2 `README.md` 使用方式若有引用手動 arm/舊 trigger 敘述,同步對齊;全套測試綠
+- [x] 3.2 `README.md` 使用方式若有引用手動 arm/舊 trigger 敘述,同步對齊;全套測試綠
