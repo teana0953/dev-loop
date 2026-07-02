@@ -18,9 +18,10 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
 3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。**啟動後立即 arm 觸發器**(見「每個 checkpoint 後 arm」)。
 4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
-   `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json>`
+   `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;✋ 此時等使用者批准提案。
-   - blocking(proposal)→ phase=propose,自動重新 propose 後再 proposal-review(計數,上限 N)。
+   - blocking(proposal)且未超過 `--max-propose`(預設 3):`propose_attempts` +1,phase=propose,自動重新 propose;propose 完成後呼叫 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event propose_done` 轉回 proposal_review,再跑本步驟的 proposal-review。
+   - blocking(proposal)且超過 `--max-propose`:引擎自動改轉 escalated(`propose_retry_exceeded`),✋ 升級給使用者(見「escalated 升級與人工續跑」)。
    - blocking(design)→ escalated,✋ 回 brainstorm 升級。
 5. **Apply(Sonnet · TDD)**:
    - **判斷平行**:讀 `.devloop/changes/<change-id>.json` 的 `parallel_groups`。
@@ -32,9 +33,10 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
    - 完成後 `event --event apply_done`。
-6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>"`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
+6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>" [--max-gate N]`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
    - exit 0 → 階段已進到 qa。
-   - exit 1 → 階段已進到 fix,回步驟 9。
+   - exit 1 且未超過 `--max-gate`(預設 3):`gate_failures` +1,階段已進到 fix,回步驟 9。
+   - exit 1 且超過 `--max-gate`:引擎自動改轉 escalated(`gate_retry_exceeded`),仍是 exit 1;✋ 升級給使用者(見「escalated 升級與人工續跑」)。`gate_failures` 不隨通過重置,只在人工續跑時歸零。
 7. **QA Gate(QA subagent;可多情境平行)**:gate 全綠後 phase=qa。subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
    `python3 -m devloop.cli qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
@@ -42,7 +44,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
    - `review_no_blocking` → merge(步驟 10)
    - `review_blocking_code` → fix(步驟 9)
    - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
-   - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者。
+   - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者(見「escalated 升級與人工續跑」)。
 9. **Fix**:機械性 → Sonnet;架構性 → Opus。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
 10. **收尾(finish 決策驅動)**:review 無 blocking 進入 merge phase 後,先問引擎決策:
    `python3 -m devloop.cli finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
@@ -50,6 +52,17 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
    - stdout `finish: pr` → `archive`(commit change 移檔)→ push 分支 → `gh pr create`(PR body 放入 `--- PR body follow-up ---` 之後印出的內容)→ 等人 review/合並。
    - stdout `finish: ask` → ✋ 停下問使用者選 merge 或 pr,再依上述對應路徑執行(選定後務必重跑 `finish` 以落地 follow-up)。
    - 上述 git 操作(merge/archive 或開 PR)實際完成後,呼叫 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event finish_done` 推進 `merge → done`(終態)。
+
+## escalated 升級與人工續跑
+
+phase 進到 `escalated` 的三種來源:proposal-review 判 design 層 blocking、`--max-propose` 超限(重複 blocking proposal)、`--max-gate` 超限(重複 gate 失敗)。任一情況都停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者。
+
+使用者處理完根因後(修正設計方向、重新規劃 propose 內容,或手動排除卡住 gate 的問題),依情境選一個人工續跑出口——套用成功後 `iteration`、`propose_attempts`、`gate_failures` 三個計數會全部歸零,重新起算上限:
+
+- `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_propose` → phase=propose,續跑步驟 2(重新 propose)。
+- `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_fix` → phase=fix,續跑步驟 9(直接修)。
+
+套用後記得依「每個 checkpoint 後 arm」重新確保續跑觸發器在位。
 
 ## 每個 checkpoint 後 arm
 

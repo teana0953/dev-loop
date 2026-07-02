@@ -19,4 +19,4 @@
 
 ## 5. SKILL 源頭同步
 
-- [ ] 5.1 `skills/dev-loop/SKILL.md`:步驟 4 blocking(proposal) 路徑補「重新 propose 後 `event --event propose_done` 再 proposal-review」;升級敘述補 `human_resume_propose`/`human_resume_fix` 人工續跑出口
+- [x] 5.1 `skills/dev-loop/SKILL.md`:步驟 4 blocking(proposal) 路徑補「重新 propose 後 `event --event propose_done` 再 proposal-review」;升級敘述補 `human_resume_propose`/`human_resume_fix` 人工續跑出口
