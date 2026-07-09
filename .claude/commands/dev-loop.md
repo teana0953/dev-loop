@@ -41,9 +41,8 @@ model: claude-opus-4-8
 依批准的設計建立一個**切小**的 OpenSpec change(符合 trunk-based 小而頻繁)。記下 `change-id` 與要用的短命分支名 `loop/<change-id>`。先 `git checkout -b loop/<change-id>`。
 
 ### B3. 啟動引擎 + 驗證提案(✋ 人工關卡)
-- `python3 -m devloop.cli start --file $CP --change-id <change-id> --branch loop/<change-id> --resume-exec "claude -p '/dev-loop resume'"`
+- `python3 -m devloop.cli start --file $CP --change-id <change-id> --branch loop/<change-id> --resume-exec "claude -p '/dev-loop resume'"`(`start` 寫入 checkpoint 後引擎自動 arm 續跑 watcher,見「規則」)。
 - `python3 -m devloop.cli validate-change --file $CP`(strict)。若失敗,修提案再驗。
-- 啟動後立即 arm 觸發器:`python3 -m devloop.cli arm-local --file $CP`(見「規則」續跑說明)。
 - 驗證通過後 **等使用者批准提案**才繼續。
 
 ### B5. Apply(Sonnet · TDD)
@@ -81,6 +80,5 @@ model: claude-opus-4-8
 ## 規則
 - 人工關卡只有三處:**B1 設計批准、B3 提案批准、escalated 升級**。其餘自動往下。
 - 每個階段轉移都由引擎 CLI 寫 checkpoint;隨時可中斷,之後 `/dev-loop resume` 接回。
-- **每個會寫 checkpoint 的點(start/event/gate/review)之後都要 arm 觸發器**(`python3 -m devloop.cli arm-local --file $CP`),這是 token 用罄前的事前部署;arm-local idempotent(watcher 活著 no-op、死了自癒)。token 用罄當下觸發器已就位,reset 後 watcher 週期重試續跑命令直到成功。
-- 進階(已知 reset 時間想精準睡):`python3 -m devloop.cli auto-resume --file $CP --reset-at <reset ISO> --exec "claude -p '/dev-loop resume'"`。
+- 引擎在每個寫 checkpoint 的子命令(start/event/gate/review 等)之後自動 arm 續跑 watcher(`auto_arm` 預設 true),不需要手動呼叫 arm-local;watcher 是 detached 程序,週期重試續跑命令直到成功(回 0 即停)。`arm-local` 仍可作為手動 idempotent fallback(watcher 活著 no-op、死了自癒)。
 - 換 model 只透過 subagent;不要在協調者層假裝切換。

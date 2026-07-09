@@ -8,15 +8,13 @@ from devloop.changemeta import ChangeMeta
 
 def test_missing_file_returns_defaults(tmp_path):
     cfg = load_config(tmp_path / "nope.json")
-    assert cfg.trigger == "local"
     assert cfg.finish is None
 
 
 def test_loads_fields(tmp_path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"trigger": "harness", "finish": "pr"}), encoding="utf-8")
+    p.write_text(json.dumps({"finish": "pr"}), encoding="utf-8")
     cfg = load_config(p)
-    assert cfg.trigger == "harness"
     assert cfg.finish == "pr"
 
 
@@ -24,7 +22,6 @@ def test_partial_file_fills_defaults(tmp_path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
     cfg = load_config(p)
-    assert cfg.trigger == "local"
     assert cfg.finish == "merge"
 
 
@@ -77,3 +74,11 @@ def test_resolve_invalid_config_value_raises():
 def test_resolve_invalid_meta_value_raises():
     with pytest.raises(ValueError):
         resolve_finish(Config(finish="merge"), ChangeMeta(finish="pull-request"))
+
+
+def test_legacy_trigger_key_silently_ignored(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"trigger": "harness", "finish": "pr"}), encoding="utf-8")
+    cfg = load_config(p)  # 舊 config 的 trigger 鍵應被靜默忽略,不報錯
+    assert cfg.finish == "pr"
+    assert not hasattr(cfg, "trigger")

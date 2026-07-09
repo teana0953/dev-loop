@@ -5,17 +5,15 @@ import os
 import shlex
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from devloop.adapter import DEFAULT_HEARTBEAT, run_adapter, run_watcher
+from devloop.adapter import DEFAULT_HEARTBEAT, run_watcher
 from devloop.changemeta import is_serial, load_change_meta
 from devloop.checkpoint import Checkpoint
 from devloop.config import load_config, resolve_finish
 from devloop.finish import render_followup, write_followup
 from devloop.gate import run_gate
 from devloop.openspec import archive_change, validate_change
-from devloop.resume import plan_resume
 from devloop.review import (
     aggregate_findings, classify, classify_proposal, classify_qa,
     non_blocking_notes, parse_review_report,
@@ -112,18 +110,6 @@ def _cmd_gate(args):
     return 0
 
 
-def _cmd_resume(args):
-    cp = Checkpoint.load(args.file)
-    now = datetime.now(timezone.utc)
-    reset_at = datetime.fromisoformat(args.reset_at) if args.reset_at else now
-    action = plan_resume(cp.phase, now, reset_at)
-    print(
-        "ready=%s sleep_seconds=%d phase=%s"
-        % (action.ready, action.sleep_seconds, action.phase)
-    )
-    return 0
-
-
 def _cmd_review(args):
     cp = Checkpoint.load(args.file)
     if args.from_legs:
@@ -196,11 +182,6 @@ def _cmd_leg_done(args):
             return 0
     print("error: no leg %r" % args.kind, file=sys.stderr)
     return 2
-
-
-def _cmd_auto_resume(args):
-    reset_at = datetime.fromisoformat(args.reset_at)
-    return run_adapter(args.file, reset_at, shlex.split(args.exec))
 
 
 def _pid_alive(pid):
@@ -465,11 +446,6 @@ def build_parser():
     p_gate.add_argument("--timeout", type=int, default=600)
     p_gate.set_defaults(func=_cmd_gate)
 
-    p_resume = sub.add_parser("resume")
-    p_resume.add_argument("--file", required=True)
-    p_resume.add_argument("--reset-at", dest="reset_at", default=None)
-    p_resume.set_defaults(func=_cmd_resume)
-
     p_review = sub.add_parser("review")
     p_review.add_argument("--file", required=True)
     p_review.add_argument("--report", default=None)
@@ -500,12 +476,6 @@ def build_parser():
     p_ld.add_argument("--kind", required=True)
     p_ld.add_argument("--report", required=True)
     p_ld.set_defaults(func=_cmd_leg_done)
-
-    p_auto = sub.add_parser("auto-resume")
-    p_auto.add_argument("--file", required=True)
-    p_auto.add_argument("--reset-at", dest="reset_at", required=True)
-    p_auto.add_argument("--exec", dest="exec", required=True)
-    p_auto.set_defaults(func=_cmd_auto_resume)
 
     p_arm = sub.add_parser("arm-local")
     p_arm.add_argument("--file", required=True)
