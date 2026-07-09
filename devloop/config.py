@@ -28,14 +28,14 @@ VALID_FINISH_VALUES = ("merge", "pr", "ask")
 def resolve_finish(config, meta) -> str:
     """決定收尾策略:change metadata 的 finish override 全域 config;皆無 → ask。
 
-    無效值(非 merge/pr/ask/None)視為設定錯誤,拋 ValueError(值本身)。
+    config.finish 與 meta.finish 各自獨立驗證——即使被合法值 override,
+    非法值(typo)也不得靜默吞掉,拋 ValueError(含來源與值)。
     """
+    for source, value in (("config.finish", config.finish), ("meta.finish", meta.finish)):
+        if value is not None and value not in VALID_FINISH_VALUES:
+            raise ValueError("%s=%r" % (source, value))
     if meta.finish is not None:
-        decision = meta.finish
-    elif config.finish is not None:
-        decision = config.finish
-    else:
-        decision = "ask"
-    if decision not in VALID_FINISH_VALUES:
-        raise ValueError(decision)
-    return decision
+        return meta.finish
+    if config.finish is not None:
+        return config.finish
+    return "ask"

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from devloop.adapter import DEFAULT_HEARTBEAT, run_watcher
@@ -13,9 +15,10 @@ from devloop.checkpoint import Checkpoint
 from devloop.config import load_config, resolve_finish
 from devloop.finish import render_followup, write_followup
 from devloop.gate import run_gate
+from devloop.history import append_history
 from devloop.openspec import archive_change, validate_change
 from devloop.review import (
-    aggregate_findings, classify, classify_proposal, classify_qa,
+    ReportError, aggregate_findings, classify, classify_proposal, classify_qa,
     non_blocking_notes, parse_review_report,
 )
 from devloop.statemachine import (
@@ -49,6 +52,17 @@ def _ensure_armed_after_save(cp, args):
         print("warning: auto-arm failed: %s" % exc, file=sys.stderr)
 
 
+def _save_with_history(cp, args, event, from_phase):
+    """checkpoint save + transition 追加到 history.jsonl + auto-arm。
+    history 為 best-effort 觀測資料,失敗僅 stderr 警告,不影響主命令。"""
+    cp.save(args.file)
+    try:
+        append_history(args.file, event, from_phase, cp.phase, cp.iteration)
+    except Exception as exc:
+        print("warning: history append failed: %s" % exc, file=sys.stderr)
+    _ensure_armed_after_save(cp, args)
+
+
 def _cmd_start(args):
     cp = Checkpoint(
         phase=args.phase,
@@ -56,18 +70,25 @@ def _cmd_start(args):
         branch=args.branch,
         resume_exec=args.resume_exec,
     )
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, "start", None)
     return 0
 
 
 def _cmd_status(args):
     cp = Checkpoint.load(args.file)
+    hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs)
+    if args.json:
+        payload = asdict(cp)
+        payload["next"] = hint
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
     print(
         "phase=%s iteration=%d change_id=%s branch=%s"
         % (cp.phase, cp.iteration, cp.change_id, cp.branch)
     )
-    print(next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs))
+    print(hint)
+    if cp.updated_at:
+        print("updated_at=%s" % cp.updated_at)
     return 0
 
 
@@ -80,13 +101,13 @@ def _apply_event(cp, event, max_iterations):
 
 def _cmd_event(args):
     cp = Checkpoint.load(args.file)
+    from_phase = cp.phase
     cp = _apply_event(cp, args.event, args.max)
     if args.event in (HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX):
         cp.iteration = 0
         cp.propose_attempts = 0
         cp.gate_failures = 0
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, args.event, from_phase)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -94,18 +115,20 @@ def _cmd_event(args):
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
     result = run_gate([shlex.split(c) for c in args.cmd], timeout=args.timeout)
+    from_phase = cp.phase
     if result.passed:
         event = GATE_PASS
     else:
         cp.gate_failures += 1
         event = GATE_RETRY_EXCEEDED if cp.gate_failures > args.max_gate else GATE_FAIL
     cp = _apply_event(cp, event, args.max)
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, event, from_phase)
     if not result.passed:
         print("gate FAILED: %s" % result.failed_command)
         print(result.output)
-        return 1
+        print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
+        # escalated 與一般 fail 必須可區分:exit 3 專屬升級,1 為轉 fix
+        return 3 if cp.phase == "escalated" else 1
     print("gate PASSED -> phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -124,10 +147,10 @@ def _cmd_review(args):
         print("error: need --report or --from-legs", file=sys.stderr)
         return 2
     cp.non_blocking.extend(non_blocking_notes(findings))
+    from_phase = cp.phase
     event = classify(findings)
     cp = _apply_event(cp, event, args.max)
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, event, from_phase)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -136,10 +159,10 @@ def _cmd_qa(args):
     cp = Checkpoint.load(args.file)
     findings = parse_review_report(args.report)
     cp.non_blocking.extend(non_blocking_notes(findings))
+    from_phase = cp.phase
     event = classify_qa(findings)
     cp = _apply_event(cp, event, args.max)
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, event, from_phase)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -148,14 +171,14 @@ def _cmd_proposal_review(args):
     cp = Checkpoint.load(args.file)
     findings = parse_review_report(args.report)
     cp.non_blocking.extend(non_blocking_notes(findings))
+    from_phase = cp.phase
     event = classify_proposal(findings)
     if event == PROPOSE_BLOCKING_PROPOSAL:
         cp.propose_attempts += 1
         if cp.propose_attempts > args.max_propose:
             event = PROPOSE_RETRY_EXCEEDED
     cp = _apply_event(cp, event, args.max)
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    _save_with_history(cp, args, event, from_phase)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
 
@@ -430,6 +453,8 @@ def build_parser():
 
     p_status = sub.add_parser("status")
     p_status.add_argument("--file", required=True)
+    p_status.add_argument("--json", action="store_true",
+                          help="以單行 JSON 輸出完整 checkpoint(含 next hint),供程式化消費")
     p_status.set_defaults(func=_cmd_status)
 
     p_event = sub.add_parser("event")
@@ -441,8 +466,10 @@ def build_parser():
     p_gate = sub.add_parser("gate")
     p_gate.add_argument("--file", required=True)
     p_gate.add_argument("--cmd", action="append", default=[])
-    p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
-    p_gate.add_argument("--max-gate", dest="max_gate", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_gate.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS,
+                        help="qa/review 正常輪次上限(gate 通過進 qa 時 iteration +1,超過升級 escalated)")
+    p_gate.add_argument("--max-gate", dest="max_gate", type=int, default=DEFAULT_MAX_ITERATIONS,
+                        help="容許的連續 gate 失敗次數(第 N+1 次失敗升級 escalated,exit 3)")
     p_gate.add_argument("--timeout", type=int, default=600)
     p_gate.set_defaults(func=_cmd_gate)
 
@@ -463,7 +490,8 @@ def build_parser():
     p_pr.add_argument("--file", required=True)
     p_pr.add_argument("--report", required=True)
     p_pr.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
-    p_pr.add_argument("--max-propose", dest="max_propose", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_pr.add_argument("--max-propose", dest="max_propose", type=int, default=DEFAULT_MAX_ITERATIONS,
+                      help="容許的 re-propose 次數(第 N+1 次 blocking(proposal) 升級 escalated)")
     p_pr.set_defaults(func=_cmd_proposal_review)
 
     p_li = sub.add_parser("legs-init")
@@ -550,6 +578,9 @@ def main(argv=None):
     try:
         return args.func(args)
     except InvalidTransition as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    except ReportError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
 

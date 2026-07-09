@@ -30,15 +30,15 @@ checkpoint SHALL 持有 `propose_attempts`(缺欄位視為 0)。`proposal-review
 - **THEN** 視為 0,不報錯
 
 ### Requirement: gate 失敗計數與超限升級
-checkpoint SHALL 持有 `gate_failures`(缺欄位視為 0;不隨 gate_pass 重置)。`gate` 命令失敗時 cli SHALL 將其 +1;若 +1 後超過上限(`--max-gate`,預設 3)SHALL 改套用 `gate_retry_exceeded` event(`gate → escalated`)而非轉 fix,並仍印失敗輸出、exit 1。
+checkpoint SHALL 持有 `gate_failures`(缺欄位視為 0;不隨 gate_pass 重置)。`gate` 命令失敗時 cli SHALL 將其 +1;若 +1 後超過上限(`--max-gate`,預設 3)SHALL 改套用 `gate_retry_exceeded` event(`gate → escalated`)而非轉 fix。失敗分支 SHALL 在失敗輸出後印 `phase=<phase> iteration=<n>` 行;轉 fix 時 exit 1,升級 escalated 時 exit 3——兩者 MUST 憑 exit code 即可區分,驅動端不需再讀 status。
 
 #### Scenario: 未超限轉 fix 並計數
 - **WHEN** phase 為 `gate`、`gate_failures` 為 0,gate 命令有失敗項
-- **THEN** phase 轉移到 `fix`,`gate_failures` 變 1,exit 1
+- **THEN** phase 轉移到 `fix`,`gate_failures` 變 1,stdout 末行含 `phase=fix`,exit 1
 
 #### Scenario: 累計超限升級 escalated
 - **WHEN** phase 為 `gate`、`gate_failures` 為 3(等於上限),gate 再度失敗
-- **THEN** phase 轉移到 `escalated`,`gate_failures` 變 4,仍印失敗輸出且 exit 1
+- **THEN** phase 轉移到 `escalated`,`gate_failures` 變 4,仍印失敗輸出、stdout 末行含 `phase=escalated`,exit 3
 
 #### Scenario: gate 通過不重置計數
 - **WHEN** `gate_failures` 為 2,gate 命令全綠

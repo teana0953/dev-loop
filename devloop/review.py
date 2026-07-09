@@ -45,9 +45,38 @@ def non_blocking_notes(findings):
     return [f.get("note", "") for f in findings if f.get("severity") == "non_blocking"]
 
 
+VALID_SEVERITIES = ("blocking", "non_blocking")
+
+
+class ReportError(ValueError):
+    """review 報告非法(檔案缺失、非 JSON、schema 不符)。格式錯必須 fail loudly,
+    不得與「findings 為空(=pass)」混同。"""
+
+
 def parse_review_report(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return data["findings"]
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReportError("cannot read report %s: %s" % (path, exc))
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ReportError("report %s is not valid JSON: %s" % (path, exc))
+    if not isinstance(data, dict) or "findings" not in data:
+        raise ReportError('report %s missing "findings" key' % path)
+    findings = data["findings"]
+    if not isinstance(findings, list):
+        raise ReportError('report %s "findings" must be a list' % path)
+    for i, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            raise ReportError("report %s findings[%d] must be an object" % (path, i))
+        severity = finding.get("severity")
+        if severity not in VALID_SEVERITIES:
+            raise ReportError(
+                "report %s findings[%d] invalid severity %r (expected blocking|non_blocking)"
+                % (path, i, severity)
+            )
+    return findings
 
 
 def aggregate_findings(report_paths):

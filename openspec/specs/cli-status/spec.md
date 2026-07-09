@@ -32,3 +32,17 @@ TBD - created by archiving change status-show-change-id. Update Purpose after ar
 - **WHEN** phase=done 執行 `status`
 - **THEN** `next:` 行明確表示無後續(如 `next: (done)`),exit 0
 
+### Requirement: status 輸出最後更新時間
+`status` 子命令 SHALL 在 `next:` 行之後輸出一行 `updated_at=<checkpoint 的 updated_at>`,讓操作者判斷 loop 是活著還是停滯。前兩行(識別行、`next:` 行)的內容與順序契約不變。
+
+#### Scenario: 第三行為 updated_at
+- **WHEN** 對任一已 save 的 checkpoint 執行 `status`
+- **THEN** 第三行以 `updated_at=` 開頭,值等於 checkpoint 檔內的 `updated_at`
+
+### Requirement: status 支援 --json 程式化輸出
+`status --json` SHALL 以單行 JSON 輸出完整 checkpoint 欄位,並附加 `next` 鍵(值同人讀模式的 `next:` 行),exit 0。無 `--json` 時輸出格式不變。
+
+#### Scenario: JSON 模式
+- **WHEN** 執行 `status --file <cp> --json`
+- **THEN** stdout 為合法 JSON,含 `phase`、`change_id`、`updated_at` 與 `next` 鍵
+

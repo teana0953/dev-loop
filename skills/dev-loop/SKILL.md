@@ -43,8 +43,8 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
    - 完成後 `event --event apply_done`。
 6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>" [--max-gate N]`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
    - exit 0 → 階段已進到 qa。
-   - exit 1 且未超過 `--max-gate`(預設 3):`gate_failures` +1,階段已進到 fix,回步驟 9。
-   - exit 1 且超過 `--max-gate`:引擎自動改轉 escalated(`gate_retry_exceeded`),仍是 exit 1;✋ 升級給使用者(見「escalated 升級與人工續跑」)。`gate_failures` 不隨通過重置,只在人工續跑時歸零。
+   - exit 1:`gate_failures` +1(未超過 `--max-gate`,預設 3),階段已進到 fix,回步驟 9。
+   - exit 3:連續失敗超過 `--max-gate`,引擎已轉 escalated(`gate_retry_exceeded`);✋ 升級給使用者(見「escalated 升級與人工續跑」)。失敗分支末行都會印 `phase=`,exit code 即可分流,不需再讀 status。`gate_failures` 不隨通過重置,只在人工續跑時歸零。
 7. **QA Gate(QA subagent;可多情境平行)**:gate 全綠後 phase=qa。subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
    `python3 -m devloop.cli qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。

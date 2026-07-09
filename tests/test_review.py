@@ -102,3 +102,57 @@ def test_aggregate_findings_empty():
     from devloop.review import aggregate_findings
 
     assert aggregate_findings([]) == []
+
+
+# --- 報告 schema strict 驗證 ---
+
+import pytest
+
+from devloop.review import ReportError
+
+
+def test_parse_missing_file_raises_report_error(tmp_path):
+    with pytest.raises(ReportError):
+        parse_review_report(tmp_path / "nope.json")
+
+
+def test_parse_non_json_raises_report_error(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text("not json", encoding="utf-8")
+    with pytest.raises(ReportError, match="JSON"):
+        parse_review_report(p)
+
+
+def test_parse_missing_findings_key_raises(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"finding": []}), encoding="utf-8")
+    with pytest.raises(ReportError, match="findings"):
+        parse_review_report(p)
+
+
+def test_parse_findings_not_list_raises(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"findings": {"severity": "blocking"}}), encoding="utf-8")
+    with pytest.raises(ReportError, match="list"):
+        parse_review_report(p)
+
+
+def test_parse_finding_not_object_raises(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"findings": ["blocking"]}), encoding="utf-8")
+    with pytest.raises(ReportError, match="object"):
+        parse_review_report(p)
+
+
+def test_parse_invalid_severity_raises(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"findings": [{"severity": "critical", "note": "x"}]}), encoding="utf-8")
+    with pytest.raises(ReportError, match="severity"):
+        parse_review_report(p)
+
+
+def test_parse_empty_findings_is_valid(tmp_path):
+    # 「真的沒 findings」與「格式錯」必須嚴格區分:空 list 合法
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    assert parse_review_report(p) == []

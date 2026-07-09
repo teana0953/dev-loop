@@ -77,6 +77,30 @@ def test_status_next_hint_terminal_done(tmp_path, capsys):
     assert lines[1] == "next: (done)"
 
 
+def test_status_third_line_shows_updated_at(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2].startswith("updated_at=")
+    assert Checkpoint.load(f).updated_at in lines[2]
+
+
+def test_status_json_outputs_checkpoint_with_next(tmp_path, capsys):
+    import json as _json
+
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="add-foo", branch="loop/add-foo").save(f)
+    code = main(["status", "--file", str(f), "--json"])
+    assert code == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["phase"] == "gate"
+    assert payload["change_id"] == "add-foo"
+    assert payload["next"].startswith("next: ")
+    assert payload["updated_at"]
+
+
 def test_event_advances_and_persists(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="apply", change_id="c", branch="b").save(f)
@@ -179,8 +203,9 @@ def test_gate_failure_increments_gate_failures(tmp_path):
 def test_gate_failure_exceeding_max_gate_escalates(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=3).save(f)
+    # escalated 用專屬 exit 3,與一般 fail(exit 1)可區分
     code = main(["gate", "--file", str(f), "--cmd", "false"])
-    assert code == 1
+    assert code == 3
     cp = Checkpoint.load(f)
     assert cp.phase == "escalated"
     assert cp.gate_failures == 4
@@ -190,10 +215,28 @@ def test_gate_failure_respects_max_gate_flag(tmp_path):
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=1).save(f)
     code = main(["gate", "--file", str(f), "--cmd", "false", "--max-gate", "1"])
-    assert code == 1
+    assert code == 3
     cp = Checkpoint.load(f)
     assert cp.phase == "escalated"
     assert cp.gate_failures == 2
+
+
+def test_gate_failure_prints_phase_line(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "gate FAILED" in out
+    assert "phase=fix" in out
+
+
+def test_gate_escalation_prints_phase_line(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b", gate_failures=3).save(f)
+    code = main(["gate", "--file", str(f), "--cmd", "false"])
+    assert code == 3
+    assert "phase=escalated" in capsys.readouterr().out
 
 
 def test_gate_pass_does_not_reset_gate_failures(tmp_path):
@@ -1346,3 +1389,52 @@ def test_auto_arm_failure_warns_but_does_not_change_exit_code_or_stdout(tmp_path
     assert "phase=gate" in captured.out
     assert captured.err.startswith("warning: auto-arm failed") or "warning: auto-arm failed" in captured.err
     assert Checkpoint.load(cp_path).phase == "gate"
+
+
+# --- report schema strict 驗證(格式錯 fail loudly,不得被當成空 findings 放行)---
+
+
+def test_qa_malformed_report_exits_2_and_does_not_advance(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b").save(f)
+    report = tmp_path / "qa.json"
+    report.write_text(json.dumps({"finding": []}), encoding="utf-8")  # 拼錯 key
+    code = main(["qa", "--file", str(f), "--report", str(report)])
+    assert code == 2
+    assert "findings" in capsys.readouterr().err
+    assert Checkpoint.load(f).phase == "qa"  # checkpoint 不變
+
+
+def test_review_report_invalid_severity_exits_2(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="review", change_id="c", branch="b").save(f)
+    report = tmp_path / "review.json"
+    report.write_text(
+        json.dumps({"findings": [{"severity": "block", "level": "code", "note": "x"}]}),
+        encoding="utf-8")
+    code = main(["review", "--file", str(f), "--report", str(report)])
+    assert code == 2
+    assert "severity" in capsys.readouterr().err
+    assert Checkpoint.load(f).phase == "review"
+
+
+def test_proposal_review_nonjson_report_exits_2(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="proposal_review", change_id="c", branch="b").save(f)
+    report = tmp_path / "pr.json"
+    report.write_text("not json", encoding="utf-8")
+    code = main(["proposal-review", "--file", str(f), "--report", str(report)])
+    assert code == 2
+    assert "JSON" in capsys.readouterr().err
+    assert Checkpoint.load(f).phase == "proposal_review"
+
+
+def test_review_from_legs_malformed_leg_report_exits_2(tmp_path):
+    f = tmp_path / "cp.json"
+    bad = tmp_path / "leg.json"
+    bad.write_text(json.dumps({"findings": "oops"}), encoding="utf-8")
+    Checkpoint(phase="review", change_id="c", branch="b",
+               review_legs=[{"kind": "code", "status": "collected", "report": str(bad)}]).save(f)
+    code = main(["review", "--file", str(f), "--from-legs"])
+    assert code == 2
+    assert Checkpoint.load(f).phase == "review"
