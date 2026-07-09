@@ -77,6 +77,7 @@ def _cmd_start(args):
 def _cmd_status(args):
     cp = Checkpoint.load(args.file)
     hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs)
+    _warn_if_watcher_missing(cp, args.file)
     if args.json:
         payload = asdict(cp)
         payload["next"] = hint
@@ -90,6 +91,19 @@ def _cmd_status(args):
     if cp.updated_at:
         print("updated_at=%s" % cp.updated_at)
     return 0
+
+
+def _warn_if_watcher_missing(cp, checkpoint_path):
+    """非終態且有續跑命令時,watcher 該在而不在 → stderr 警告(stdout 契約不變)。"""
+    if cp.phase == "done" or not cp.resume_exec:
+        return
+    state, _pid = _watcher_state(checkpoint_path)
+    if state != "running":
+        print(
+            "warning: watcher not running; re-arm: "
+            "python3 -m devloop.cli arm-local --file %s" % checkpoint_path,
+            file=sys.stderr,
+        )
 
 
 def _apply_event(cp, event, max_iterations):
@@ -219,17 +233,34 @@ def _pid_alive(pid):
     return True
 
 
-def _spawn_watcher(exec_command, heartbeat):
+def _spawn_watcher(exec_command, heartbeat, log_path=None):
     """spawn 一個 detached 行程跑 watch 子命令,回傳其 PID。"""
-    proc = subprocess.Popen(
-        [
-            sys.executable, "-m", "devloop.cli", "watch",
-            "--exec", shlex.join(exec_command),
-            "--heartbeat", str(heartbeat),
-        ],
-        start_new_session=True,
-    )
+    argv = [
+        sys.executable, "-m", "devloop.cli", "watch",
+        "--exec", shlex.join(exec_command),
+        "--heartbeat", str(heartbeat),
+    ]
+    if log_path:
+        argv += ["--log", str(log_path)]
+    proc = subprocess.Popen(argv, start_new_session=True)
     return proc.pid
+
+
+def _watcher_state(checkpoint_path):
+    """讀 watcher.pid 判斷 watcher 狀態。回傳 (state, pid):
+    "running"(活著)/ "dead"(pid 檔在但行程死)/ "absent"(無 pid 檔或內容非法)。"""
+    pid_path = Path(checkpoint_path).parent / "watcher.pid"
+    if not pid_path.exists():
+        return ("absent", None)
+    try:
+        pid = int(pid_path.read_text().strip())
+    except ValueError:
+        return ("absent", None)
+    return ("running", pid) if _pid_alive(pid) else ("dead", pid)
+
+
+def _watcher_log_path(checkpoint_path) -> Path:
+    return Path(checkpoint_path).parent / "watcher-log.jsonl"
 
 
 def ensure_armed(checkpoint_path, heartbeat=DEFAULT_HEARTBEAT, exec_override=None):
@@ -242,15 +273,12 @@ def ensure_armed(checkpoint_path, heartbeat=DEFAULT_HEARTBEAT, exec_override=Non
     exec_str = exec_override or cp.resume_exec
     if not exec_str:
         return ("skipped", None)
+    state, pid = _watcher_state(checkpoint_path)
+    if state == "running":
+        return ("already", pid)
+    pid = _spawn_watcher(
+        shlex.split(exec_str), heartbeat, log_path=_watcher_log_path(checkpoint_path))
     pid_path = Path(checkpoint_path).parent / "watcher.pid"
-    if pid_path.exists():
-        try:
-            pid = int(pid_path.read_text().strip())
-        except ValueError:
-            pid = None
-        if pid is not None and _pid_alive(pid):
-            return ("already", pid)
-    pid = _spawn_watcher(shlex.split(exec_str), heartbeat)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(pid))
     return ("armed", pid)
@@ -272,7 +300,53 @@ def _cmd_arm_local(args):
 
 
 def _cmd_watch(args):
-    return run_watcher(shlex.split(args.exec), heartbeat=args.heartbeat)
+    return run_watcher(shlex.split(args.exec), heartbeat=args.heartbeat, log_path=args.log)
+
+
+def _cmd_watcher_status(args):
+    """watcher 排障一眼看:行程狀態、續跑命令、最近一次嘗試。
+    exit 0 = 在位或不需要;exit 1 = 該在而不在(建議 arm-local)。"""
+    cp = Checkpoint.load(args.file)
+    state, pid = _watcher_state(args.file)
+    if state == "running":
+        print("watcher: running (pid=%d)" % pid)
+    elif state == "dead":
+        print("watcher: dead (stale pid=%d)" % pid)
+    else:
+        print("watcher: not armed")
+    print("resume_exec: %s" % (cp.resume_exec or "(none)"))
+    last = _last_watcher_attempt(args.file)
+    if last is None:
+        print("last attempt: (none)")
+    else:
+        line = "last attempt: %s exit=%s %s" % (
+            last.get("ts", "?"), last.get("exit_code", "?"), last.get("action", ""))
+        print(line.rstrip())
+        tail = (last.get("output_tail") or "").strip()
+        if tail:
+            print("output tail: %s" % tail)
+    needed = cp.phase != "done" and bool(cp.resume_exec)
+    if needed and state != "running":
+        print("hint: python3 -m devloop.cli arm-local --file %s" % args.file)
+        return 1
+    return 0
+
+
+def _last_watcher_attempt(checkpoint_path):
+    """讀 watcher log 最後一筆;無檔/空檔/壞行回 None(排障工具自身不炸)。"""
+    log = _watcher_log_path(checkpoint_path)
+    if not log.exists():
+        return None
+    last = None
+    for line in log.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            last = json.loads(line)
+        except ValueError:
+            continue
+    return last
 
 
 def _cmd_validate_change(args):
@@ -514,7 +588,13 @@ def build_parser():
     p_watch = sub.add_parser("watch")
     p_watch.add_argument("--exec", dest="exec", required=True)
     p_watch.add_argument("--heartbeat", type=int, default=DEFAULT_HEARTBEAT)
+    p_watch.add_argument("--log", default=None,
+                         help="每次嘗試追加一行 JSON 的 log 檔路徑(watcher-status 讀取)")
     p_watch.set_defaults(func=_cmd_watch)
+
+    p_ws = sub.add_parser("watcher-status")
+    p_ws.add_argument("--file", required=True)
+    p_ws.set_defaults(func=_cmd_watcher_status)
 
     p_validate = sub.add_parser("validate-change")
     p_validate.add_argument("--file", required=True)

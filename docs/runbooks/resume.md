@@ -47,12 +47,16 @@ python3 -m devloop.cli <子命令> --file $CP
 **想確認 watcher 真的在位:**
 
 ```bash
-cat .devloop/watcher.pid                 # 有 pid 檔
-ps -p "$(cat .devloop/watcher.pid)"      # 該程序仍存活
+~/.claude/skills/dev-loop/devloop watcher-status --file .devloop/checkpoint.json
 ```
 
-- pid 檔存在且程序活著 → 續跑已就位,等配額恢復即可。
-- pid 檔不存在或程序已死 → 見 [場景 E](#場景-ewatcher-掛了--要換續跑命令--沒自動-arm)。
+一次印出行程狀態(`running` / `dead` / `not armed`)、續跑命令、與最近一次嘗試(時間、exit code、輸出尾巴,讀自 `.devloop/watcher-log.jsonl`):
+
+- `watcher: running` 且 exit 0 → 續跑已就位,等配額恢復即可。
+- `watcher: dead` / `not armed` 且 exit 1(附 `hint:`)→ 見 [場景 E](#場景-ewatcher-掛了--要換續跑命令--沒自動-arm)。
+- 想看 watcher 每次重試的完整歷史:`cat .devloop/watcher-log.jsonl`。
+
+(`status` 也會在 watcher 該在而不在時于 stderr 印 `warning: watcher not running`,平時看 status 就能發現。)
 
 ---
 
@@ -132,7 +136,8 @@ ps -p "$(cat .devloop/watcher.pid)"      # 該程序仍存活
 |---|---|
 | 看目前 phase / 下一步 | `devloop status --file $CP` |
 | 主動接回 | 在專案 session 說「dev-loop resume」 |
-| 確認 watcher 在位 | `cat $CP_DIR/watcher.pid && ps -p "$(cat $CP_DIR/watcher.pid)"` |
+| 確認 watcher 在位 / 排障 | `devloop watcher-status --file $CP` |
+| watcher 重試完整歷史 | `cat $CP_DIR/watcher-log.jsonl` |
 | 手動確保 watcher | `devloop arm-local --file $CP [--exec "<cmd>"]` |
 | 平行 units 進度 | `devloop units-status --file $CP` |
 | escalated 續跑(重提案) | `devloop event --file $CP --event human_resume_propose` |

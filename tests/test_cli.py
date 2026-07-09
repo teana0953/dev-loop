@@ -380,7 +380,7 @@ def test_arm_local_spawns_when_no_pidfile(tmp_path, monkeypatch):
         resume_exec="claude -p '/dev-loop resume'",
     ).save(f)
     spawned = {}
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (spawned.update(cmd=cmd), 4321)[1])
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: (spawned.update(cmd=cmd), 4321)[1])
 
     code = cli.main(["arm-local", "--file", str(f)])
     assert code == 0
@@ -396,7 +396,7 @@ def test_arm_local_noop_when_watcher_alive(tmp_path, monkeypatch):
     (f.parent / "watcher.pid").write_text("999")
     monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: spawned.append(cmd) or 1)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: spawned.append(cmd) or 1)
 
     code = cli.main(["arm-local", "--file", str(f)])
     assert code == 0
@@ -411,7 +411,7 @@ def test_arm_local_respawns_on_stale_pid(tmp_path, monkeypatch):
     Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
     (f.parent / "watcher.pid").write_text("999")
     monkeypatch.setattr(cli, "_pid_alive", lambda pid: False)
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 5555)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: 5555)
 
     code = cli.main(["arm-local", "--file", str(f)])
     assert code == 0
@@ -424,7 +424,7 @@ def test_arm_local_errors_without_exec(tmp_path, monkeypatch):
     f = tmp_path / ".devloop" / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: spawned.append(cmd) or 1)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: spawned.append(cmd) or 1)
 
     code = cli.main(["arm-local", "--file", str(f)])
     assert code != 0
@@ -438,7 +438,7 @@ def test_arm_local_exec_override(tmp_path, monkeypatch):
     f = tmp_path / ".devloop" / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
     captured = {}
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (captured.update(cmd=cmd), 7)[1])
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: (captured.update(cmd=cmd), 7)[1])
 
     code = cli.main(["arm-local", "--file", str(f), "--exec", "true"])
     assert code == 0
@@ -479,7 +479,7 @@ def test_arm_local_respawns_on_nonnumeric_pid(tmp_path, monkeypatch):
     f = tmp_path / ".devloop" / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b", resume_exec="x").save(f)
     (f.parent / "watcher.pid").write_text("garbage")
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 8888)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: 8888)
 
     code = cli.main(["arm-local", "--file", str(f)])
     assert code == 0
@@ -526,7 +526,7 @@ def test_ensure_armed_spawns_when_no_pidfile(tmp_path, monkeypatch, capsys):
 
     f = tmp_path / ".devloop" / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b", resume_exec="a b").save(f)
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: 4242)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: 4242)
 
     status, info = cli.ensure_armed(str(f))
     assert status == "armed"
@@ -565,7 +565,7 @@ def test_ensure_armed_exec_override(tmp_path, monkeypatch):
     f = tmp_path / ".devloop" / "cp.json"
     Checkpoint(phase="review", change_id="c", branch="b").save(f)  # resume_exec=None
     captured = {}
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb: (captured.update(cmd=cmd), 7)[1])
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda cmd, hb, **kw: (captured.update(cmd=cmd), 7)[1])
 
     status, info = cli.ensure_armed(str(f), exec_override="true")
     assert status == "armed"
@@ -1303,7 +1303,7 @@ def test_auto_arm_after_checkpoint_save(cmd, tmp_path, monkeypatch):
     import devloop.cli as cli
 
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: (spawned.append(c), 9999)[1])
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb, **kw: (spawned.append(c), 9999)[1])
     argv, cp_path = _auto_arm_case(cmd, tmp_path)
 
     main(argv)
@@ -1317,7 +1317,7 @@ def test_auto_arm_units_init_parallel_path_also_arms(tmp_path, monkeypatch):
     import devloop.cli as cli
 
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: (spawned.append(c), 8888)[1])
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb, **kw: (spawned.append(c), 8888)[1])
     repo = _repo(tmp_path)
     cp_path = repo / ".devloop/checkpoint.json"
     Checkpoint(phase="apply", change_id="c", branch="loop/x", resume_exec="true").save(cp_path)
@@ -1340,7 +1340,7 @@ def test_auto_arm_skips_silently_when_resume_exec_empty(tmp_path, monkeypatch, c
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="apply", change_id="c", branch="b").save(cp_path)  # resume_exec=None
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: spawned.append(c) or 1)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb, **kw: spawned.append(c) or 1)
 
     rc = main(["event", "--file", str(cp_path), "--event", "apply_done"])
     assert rc == 0
@@ -1359,7 +1359,7 @@ def test_auto_arm_disabled_by_config(tmp_path, monkeypatch):
     (cp_path.parent / "config.json").write_text(
         json.dumps({"auto_arm": False}), encoding="utf-8")
     spawned = []
-    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb: spawned.append(c) or 1)
+    monkeypatch.setattr(cli, "_spawn_watcher", lambda c, hb, **kw: spawned.append(c) or 1)
 
     rc = main(["gate", "--file", str(cp_path), "--cmd", "true"])
     assert rc == 0
@@ -1378,7 +1378,7 @@ def test_auto_arm_failure_warns_but_does_not_change_exit_code_or_stdout(tmp_path
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="apply", change_id="c", branch="b", resume_exec="true").save(cp_path)
 
-    def boom(cmd, hb):
+    def boom(cmd, hb, **kw):
         raise OSError("spawn refused")
 
     monkeypatch.setattr(cli, "_spawn_watcher", boom)
