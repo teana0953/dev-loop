@@ -16,6 +16,7 @@ from devloop.config import load_config, resolve_finish, validate_gate_cmds
 from devloop.finish import render_followup, write_followup
 from devloop.gate import run_gate
 from devloop.history import append_history
+from devloop.housekeeping import archive_workfiles
 from devloop.openspec import archive_change, validate_change
 from devloop.review import (
     ReportError, aggregate_findings, classify, classify_proposal, classify_qa,
@@ -380,7 +381,16 @@ def _cmd_archive(args):
     cp = Checkpoint.load(args.file)
     result = archive_change(cp.change_id)
     print(result.output)
-    return 0 if result.ok else 1
+    if not result.ok:
+        return 1
+    # openspec archive 成功後收工作檔;housekeeping 失敗不反噬 archive 結果
+    try:
+        archived = archive_workfiles(args.file, cp.change_id)
+        print("archived workfiles: %d -> %s" % (
+            len(archived), Path(args.file).parent / "archive" / cp.change_id))
+    except Exception as exc:
+        print("warning: workfile archive failed: %s" % exc, file=sys.stderr)
+    return 0
 
 
 def _cmd_finish(args):
