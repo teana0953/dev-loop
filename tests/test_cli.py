@@ -1511,3 +1511,56 @@ def test_status_gate_hint_keeps_skeleton_without_config(tmp_path, capsys):
     main(["status", "--file", str(f)])
     lines = capsys.readouterr().out.splitlines()
     assert "<test-cmd>" in lines[1]
+
+
+# --- start 覆蓋保護(done 終態語義)---
+
+
+def test_start_over_done_checkpoint_is_allowed(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="done", change_id="old", branch="loop/old").save(f)
+    code = main(["start", "--file", str(f), "--change-id", "new", "--branch", "loop/new"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.change_id == "new"
+    assert cp.phase == "apply"
+
+
+def test_start_over_in_progress_checkpoint_refused(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="old", branch="loop/old", iteration=2).save(f)
+    code = main(["start", "--file", str(f), "--change-id", "new", "--branch", "loop/new"])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "checkpoint exists" in err and "phase=gate" in err and "--force" in err
+    cp = Checkpoint.load(f)
+    assert cp.change_id == "old"  # 原 loop 不被丟掉
+
+
+def test_start_over_escalated_checkpoint_refused(tmp_path):
+    # escalated 是停等人工,有 human_resume 出口,不該被 start 靜默清掉
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="escalated", change_id="old", branch="loop/old").save(f)
+    assert main(["start", "--file", str(f), "--change-id", "new", "--branch", "b"]) == 2
+    assert Checkpoint.load(f).change_id == "old"
+
+
+def test_start_force_overwrites_in_progress(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="fix", change_id="old", branch="loop/old").save(f)
+    code = main(["start", "--file", str(f), "--change-id", "new", "--branch", "loop/new",
+                 "--force"])
+    assert code == 0
+    assert Checkpoint.load(f).change_id == "new"
+
+
+def test_start_over_corrupt_checkpoint_refused_without_force(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    f.write_text("not json", encoding="utf-8")
+    code = main(["start", "--file", str(f), "--change-id", "new", "--branch", "b"])
+    assert code == 2
+    assert "unreadable" in capsys.readouterr().err
+    # --force 可覆蓋壞檔
+    assert main(["start", "--file", str(f), "--change-id", "new", "--branch", "b",
+                 "--force"]) == 0
+    assert Checkpoint.load(f).change_id == "new"

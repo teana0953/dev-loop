@@ -65,6 +65,21 @@ def _save_with_history(cp, args, event, from_phase):
 
 
 def _cmd_start(args):
+    # 覆蓋保護:非 done 的既有 checkpoint 是進行中(或停等人工)的 loop,
+    # 靜默覆蓋等於丟狀態;done 才自然讓路給下一輪。
+    path = Path(args.file)
+    if path.exists() and not args.force:
+        try:
+            existing_phase = Checkpoint.load(args.file).phase
+        except Exception:
+            existing_phase = None  # 壞檔讀不出 phase,同樣保守擋下
+        if existing_phase != "done":
+            print(
+                "error: checkpoint exists (phase=%s); resume it (see `status`) "
+                "or pass --force to overwrite" % (existing_phase or "unreadable"),
+                file=sys.stderr,
+            )
+            return 2
     cp = Checkpoint(
         phase=args.phase,
         change_id=args.change_id,
@@ -553,6 +568,8 @@ def build_parser():
     p_start.add_argument("--branch", required=True)
     p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
     p_start.add_argument("--phase", default="apply", choices=PHASES)
+    p_start.add_argument("--force", action="store_true",
+                         help="覆蓋非 done 的既有 checkpoint(預設拒絕,防丟進行中的 loop)")
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status")

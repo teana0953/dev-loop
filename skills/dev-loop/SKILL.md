@@ -25,7 +25,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 1. **Brainstorm(Opus)**:用 `/brainstorming` 產出設計文件。✋ 等使用者批准。
 2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
-3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。
+3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。若 start 報 `checkpoint exists`(exit 2):既有 loop 尚未完結——先跑 `status` 判斷該 resume 還是升級給使用者,**不要**逕自 `--force` 覆蓋。
 4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
    `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;✋ 此時等使用者批准提案。
