@@ -2,7 +2,7 @@
 
 把「用 agent 開發」的固定流程形式化成一個可重複、可中斷續跑、只在關鍵點需人工的 loop。
 
-**流程**:`/brainstorming`(Opus)→ OpenSpec propose → proposal-review(Opus,自動修到乾淨)→ ✋批准提案 → apply + TDD(Sonnet,可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask);token 用罄則由 detached watcher 兜底自動續跑。
+**流程**:brainstorm(Opus,可選 superpowers 驅動)→ ✋批准設計 → OpenSpec propose → proposal-review(Opus,自動修到乾淨)→ ✋批准提案 → apply + TDD(Sonnet,可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask)。兩個 ✋ 批准關卡可用 `auto_approve` 關閉(escalated 安全閥恆停);token 用罄則由 detached watcher 兜底自動續跑。
 
 > 設計與三份實作計畫見 `docs/superpowers/specs/2026-06-30-dev-loop-v2-design.md` 與 `docs/superpowers/plans/2026-06-30-dev-loop-v2-*.md`。
 
@@ -23,7 +23,7 @@ git init                       # 若還不是 git repo(trunk-based)
 openspec init --tools claude   # 初始化 OpenSpec
 ```
 
-可選:在 `.devloop/config.json` 設定收尾策略(未設則收尾停下問人工;續跑固定由本機 watcher 兜底):
+可選:在 `.devloop/config.json` 做專案級設定(`superpowers` / `auto_approve` 未設時會在第一次啟動 loop 問一次並寫回;續跑固定由本機 watcher 兜底):
 
 ```json
 {
@@ -44,7 +44,7 @@ openspec init --tools claude   # 初始化 OpenSpec
 
 > 「用 dev-loop 幫我做 X 功能」 / 「dev-loop resume」(續跑)
 
-Claude 會依流程跑:brainstorm ✋ → propose → proposal-review(自動修到乾淨)✋ → apply+TDD(可平行)→ hard gate → QA → review(code‖UI-UX legs)→ fix↺ → 依 `finish` 收尾(merge / pr / ask)。checkpoint 落在該專案的 `.devloop/`,各專案狀態獨立。
+Claude 會依流程跑:brainstorm ✋ → propose → proposal-review(自動修到乾淨)✋ → apply+TDD(可平行)→ hard gate → QA → review(code‖UI-UX legs)→ fix↺ → 依 `finish` 收尾(merge / pr / ask)。兩個 ✋ 依 `auto_approve` 決定停或不停。checkpoint 落在該專案的 `.devloop/`,各專案狀態獨立。
 
 **人工關卡**:批准設計、批准提案(proposal-review 判定 clean 後)——這兩處可用 `auto_approve: true` 關閉;超過最大輪數時的升級(escalated)**恆停**,是不可關閉的安全閥;若 `finish` 未設或為 `ask`,收尾時多一處選 merge/pr。其餘自動。搭配 `auto_approve: true` + `finish: merge` 可跑全自動 loop,只在 escalated 時找人。
 
