@@ -10,6 +10,13 @@ class Config:
     finish: str | None = None
     auto_arm: bool = True
     gate_cmds: list = field(default_factory=list)
+    # superpowers 由編排 skill 消費(引擎不分支):True/False/None(未設,
+    # SKILL 第一次啟動時問使用者再寫回)。非布林值原樣保留,消費端視為未設。
+    superpowers: bool | None = None
+    # auto_approve 同為編排層開關:true 時跳過「批准設計/批准提案」人工關卡
+    # (escalated 安全閥不受影響)。只認 JSON true——它管的是略過人工,
+    # 解析錯誤必須朝「要人工」的保守方向退化。
+    auto_approve: bool = False
 
 
 def load_config(path) -> Config:
@@ -21,6 +28,8 @@ def load_config(path) -> Config:
         finish=data.get("finish", None),
         auto_arm=bool(data.get("auto_arm", True)),
         gate_cmds=data.get("gate_cmds", []),
+        superpowers=data.get("superpowers", None),
+        auto_approve=(data.get("auto_approve", False) is True),
     )
 
 

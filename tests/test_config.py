@@ -124,3 +124,53 @@ def test_validate_gate_cmds_rejects_non_list_and_empty_strings():
         validate_gate_cmds(["pytest", ""])  # 空字串項
     with pytest.raises(ValueError, match="gate_cmds"):
         validate_gate_cmds([["pytest"]])  # 巢狀 list
+
+
+# --- superpowers(編排層開關,引擎只載入不分支)---
+
+
+def test_loads_superpowers_true_false(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"superpowers": True}), encoding="utf-8")
+    assert load_config(p).superpowers is True
+    p.write_text(json.dumps({"superpowers": False}), encoding="utf-8")
+    assert load_config(p).superpowers is False
+
+
+def test_missing_superpowers_defaults_none(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    assert load_config(p).superpowers is None
+    assert load_config(tmp_path / "nope.json").superpowers is None
+
+
+def test_non_bool_superpowers_kept_verbatim(tmp_path):
+    # 非布林不 coerce(bool("false") 會靜默變 True);原樣保留,消費端視為未設
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"superpowers": "yes"}), encoding="utf-8")
+    assert load_config(p).superpowers == "yes"
+
+
+# --- auto_approve(人工批准關卡開關;只認 JSON true,錯值朝「要人工」退化)---
+
+
+def test_loads_auto_approve_true(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"auto_approve": True}), encoding="utf-8")
+    assert load_config(p).auto_approve is True
+
+
+def test_missing_auto_approve_defaults_false(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    assert load_config(p).auto_approve is False
+    assert load_config(tmp_path / "nope.json").auto_approve is False
+
+
+def test_non_bool_auto_approve_degrades_to_false(tmp_path):
+    # "true"/1 等 truthy 錯值不得被 coerce 成自動批准
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"auto_approve": "true"}), encoding="utf-8")
+    assert load_config(p).auto_approve is False
+    p.write_text(json.dumps({"auto_approve": 1}), encoding="utf-8")
+    assert load_config(p).auto_approve is False

@@ -26,11 +26,18 @@ openspec init --tools claude   # 初始化 OpenSpec
 可選:在 `.devloop/config.json` 設定收尾策略(未設則收尾停下問人工;續跑固定由本機 watcher 兜底):
 
 ```json
-{ "finish": "merge", "gate_cmds": ["python3 -m pytest -q"] }
+{
+  "finish": "merge",
+  "gate_cmds": ["python3 -m pytest -q"],
+  "superpowers": true,
+  "auto_approve": false
+}
 ```
 
 - `finish`:`merge`(自動合並回 trunk)| `pr`(開 PR 交棒給人)| `ask`(停下問人工,預設)。可被單一 change 的 `.devloop/changes/<id>.json` 的 `finish` override。
 - `gate_cmds`:list,專案的 test/lint/build 命令(每項語義同 gate 的一個 `--cmd`)。設了之後 `gate` 不帶 `--cmd` 即用它,`status` 的 gate hint 也會給完整可執行命令(續跑零判斷);`--cmd` 仍可臨時 override。
+- `superpowers`:布林。true 時判斷型步驟優先用 [superpowers](https://github.com/obra/superpowers) skills 驅動(brainstorming / TDD / systematic-debugging / code-review 標準;未安裝自動 fallback 內建做法);false 用內建流程。未設 → 第一次啟動時問使用者一次並寫回。
+- `auto_approve`:布林,預設 false。true 時「批准設計」「批准提案」兩個人工關卡自動通過;**escalated 安全閥恆停,不受此鍵影響**。只認 JSON `true`,錯值朝「要人工」方向保守退化。未設 → 第一次啟動時問使用者一次並寫回。
 - `auto_arm`:布林,預設 true。引擎在每個寫 checkpoint 的子命令之後自動確保 watcher 在位;設 false 關閉此自動行為(手動 `arm-local` 不受影響),一般不需要動這個鍵。
 
 **之後**在該專案的 Claude Code session 直接呼叫 skill:
@@ -39,7 +46,7 @@ openspec init --tools claude   # 初始化 OpenSpec
 
 Claude 會依流程跑:brainstorm ✋ → propose → proposal-review(自動修到乾淨)✋ → apply+TDD(可平行)→ hard gate → QA → review(code‖UI-UX legs)→ fix↺ → 依 `finish` 收尾(merge / pr / ask)。checkpoint 落在該專案的 `.devloop/`,各專案狀態獨立。
 
-**人工關卡**:批准設計、批准提案(proposal-review 判定 clean 後)、超過最大輪數時的升級;若 `finish` 未設或為 `ask`,收尾時多一處選 merge/pr。其餘自動。
+**人工關卡**:批准設計、批准提案(proposal-review 判定 clean 後)——這兩處可用 `auto_approve: true` 關閉;超過最大輪數時的升級(escalated)**恆停**,是不可關閉的安全閥;若 `finish` 未設或為 `ask`,收尾時多一處選 merge/pr。其餘自動。搭配 `auto_approve: true` + `finish: merge` 可跑全自動 loop,只在 escalated 時找人。
 
 ## 引擎 CLI
 
