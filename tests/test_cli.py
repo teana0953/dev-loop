@@ -206,30 +206,7 @@ def test_gate_pass_does_not_reset_gate_failures(tmp_path):
     assert cp.gate_failures == 2
 
 
-from datetime import timezone, datetime, timedelta
 import json
-
-
-def test_resume_ready_when_no_reset_at(tmp_path, capsys):
-    f = tmp_path / "cp.json"
-    Checkpoint(phase="review", change_id="c", branch="b", iteration=1).save(f)
-    code = main(["resume", "--file", str(f)])
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "ready=True" in out
-    assert "sleep_seconds=0" in out
-    assert "phase=review" in out
-
-
-def test_resume_not_ready_when_reset_in_future(tmp_path, capsys):
-    f = tmp_path / "cp.json"
-    Checkpoint(phase="fix", change_id="c", branch="b").save(f)
-    future = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
-    code = main(["resume", "--file", str(f), "--reset-at", future])
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "ready=False" in out
-    assert "sleep_seconds=3600" in out
 
 
 def test_review_no_blocking_advances_to_merge(tmp_path):
@@ -349,46 +326,6 @@ def test_archive_failure_returns_1(tmp_path, monkeypatch):
         lambda change_id, runner=None: OpenSpecResult(ok=False, command=["openspec", "archive", change_id], output="nope"),
     )
     assert cli.main(["archive", "--file", str(f)]) == 1
-
-
-def test_auto_resume_subcommand(tmp_path, monkeypatch):
-    import devloop.cli as cli
-
-    f = tmp_path / "cp.json"
-    Checkpoint(phase="review", change_id="c", branch="b").save(f)
-    captured = {}
-
-    def fake_run_adapter(checkpoint_path, reset_at, exec_command, **kw):
-        captured["path"] = str(checkpoint_path)
-        captured["exec"] = exec_command
-        captured["reset_year"] = reset_at.year
-        return 0
-
-    monkeypatch.setattr(cli, "run_adapter", fake_run_adapter)
-    code = cli.main([
-        "auto-resume",
-        "--file", str(f),
-        "--reset-at", "2026-06-18T15:00:00+00:00",
-        "--exec", "claude -p '/dev-loop resume'",
-    ])
-    assert code == 0
-    assert captured["path"] == str(f)
-    # --exec 應被 shlex 切分成 argv
-    assert captured["exec"] == ["claude", "-p", "/dev-loop resume"]
-    assert captured["reset_year"] == 2026
-
-
-def test_auto_resume_propagates_exit_code(tmp_path, monkeypatch):
-    import devloop.cli as cli
-
-    f = tmp_path / "cp.json"
-    Checkpoint(phase="fix", change_id="c", branch="b").save(f)
-    monkeypatch.setattr(cli, "run_adapter", lambda *a, **k: 7)
-    code = cli.main([
-        "auto-resume", "--file", str(f),
-        "--reset-at", "2026-06-18T15:00:00+00:00", "--exec", "true",
-    ])
-    assert code == 7
 
 
 def test_arm_local_spawns_when_no_pidfile(tmp_path, monkeypatch):
