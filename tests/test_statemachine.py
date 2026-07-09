@@ -231,3 +231,12 @@ def test_next_hint_review_with_all_legs_collected_gives_review_command():
     legs = [{"kind": "code", "status": "collected", "report": "c.json"}]
     hint = next_hint("review", "/x/cp.json", review_legs=legs)
     assert "devloop.cli review" in hint
+
+
+def test_next_hint_gate_with_config_cmds_gives_full_command():
+    hint = next_hint("gate", "cp.json", gate_cmds=["pytest -q"])
+    assert hint == "next: python3 -m devloop.cli gate --file cp.json"
+
+
+def test_next_hint_gate_without_config_cmds_keeps_skeleton():
+    assert "<test-cmd>" in next_hint("gate", "cp.json", gate_cmds=[])

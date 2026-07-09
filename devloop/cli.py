@@ -12,7 +12,7 @@ from pathlib import Path
 from devloop.adapter import DEFAULT_HEARTBEAT, run_watcher
 from devloop.changemeta import is_serial, load_change_meta
 from devloop.checkpoint import Checkpoint
-from devloop.config import load_config, resolve_finish
+from devloop.config import load_config, resolve_finish, validate_gate_cmds
 from devloop.finish import render_followup, write_followup
 from devloop.gate import run_gate
 from devloop.history import append_history
@@ -76,7 +76,9 @@ def _cmd_start(args):
 
 def _cmd_status(args):
     cp = Checkpoint.load(args.file)
-    hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs)
+    config = load_config(Path(args.file).parent / "config.json")
+    hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs,
+                     gate_cmds=config.gate_cmds)
     _warn_if_watcher_missing(cp, args.file)
     if args.json:
         payload = asdict(cp)
@@ -126,9 +128,27 @@ def _cmd_event(args):
     return 0
 
 
+def _resolve_gate_cmds(args):
+    """gate 命令來源:CLI --cmd 優先,否則 config 的 gate_cmds;皆無或非法 → ValueError。
+    空命令清單絕不能進 run_gate(空 list 恆 pass,會假綠)。"""
+    if args.cmd:
+        return args.cmd
+    config = load_config(Path(args.file).parent / "config.json")
+    cmds = validate_gate_cmds(config.gate_cmds)
+    if not cmds:
+        raise ValueError(
+            "no gate commands: pass --cmd or set gate_cmds in .devloop/config.json")
+    return cmds
+
+
 def _cmd_gate(args):
     cp = Checkpoint.load(args.file)
-    result = run_gate([shlex.split(c) for c in args.cmd], timeout=args.timeout)
+    try:
+        cmds = _resolve_gate_cmds(args)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    result = run_gate([shlex.split(c) for c in cmds], timeout=args.timeout)
     from_phase = cp.phase
     if result.passed:
         event = GATE_PASS

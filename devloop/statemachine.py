@@ -72,8 +72,13 @@ _TERMINAL_HINTS = {
 }
 
 
-def next_hint(phase, checkpoint_path, units=None, review_legs=None):
-    """依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。"""
+def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=None):
+    """依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。
+
+    gate_cmds 非空(config 已存 gate 命令)時,gate hint 給完整可執行命令
+    (引擎會 fallback 到 config),而非 `<test-cmd>` 骨架。"""
+    if phase == "gate" and gate_cmds:
+        return "next: python3 -m devloop.cli gate --file %s" % checkpoint_path
     if phase in ("apply", "fix") and units:
         pending = [u["id"] for u in units if u.get("status") in ("pending", "in_progress")]
         if pending:

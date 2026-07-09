@@ -10,6 +10,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 ## 設定
 
 - `finish`:收尾策略 `merge`|`pr`|`ask`(未設等同 `ask`);可被 `.devloop/changes/<id>.json` 的 `finish` override。
+- `gate_cmds`:list,專案的 test/lint/build 命令。設了之後 gate 可不帶 `--cmd`;**首次為專案跑 gate 時,把推斷出的命令寫進 config 的 `gate_cmds`**,之後(含冷啟動續跑)就不用再推斷。
 - `auto_arm`:布林,預設 true。false 時關閉引擎自動 arm(僅影響 auto-arm,`arm-local` 手動路徑不受影響)。一般不需要動這個鍵。
 
 ## 核心迴圈
@@ -41,7 +42,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
    - 完成後 `event --event apply_done`。
-6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json --cmd "<test-cmd>" --cmd "<lint-cmd>" --cmd "<build-cmd>" [--max-gate N]`(每個 `--cmd` 可為多字詞命令,如 `--cmd "pytest tests/"`)。
+6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json [--cmd "<test-cmd>" ...] [--max-gate N]`。config 有 `gate_cmds` 時不帶 `--cmd` 直接跑;否則帶 `--cmd`(每個可為多字詞命令,如 `--cmd "pytest tests/"`)**並同時把命令寫進 config 的 `gate_cmds`** 供之後續跑零判斷。兩者皆無 → exit 2(不假綠)。
    - exit 0 → 階段已進到 qa。
    - exit 1:`gate_failures` +1(未超過 `--max-gate`,預設 3),階段已進到 fix,回步驟 9。
    - exit 3:連續失敗超過 `--max-gate`,引擎已轉 escalated(`gate_retry_exceeded`);✋ 升級給使用者(見「escalated 升級與人工續跑」)。失敗分支末行都會印 `phase=`,exit code 即可分流,不需再讀 status。`gate_failures` 不隨通過重置,只在人工續跑時歸零。

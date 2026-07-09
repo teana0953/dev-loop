@@ -1438,3 +1438,76 @@ def test_review_from_legs_malformed_leg_report_exits_2(tmp_path):
     code = main(["review", "--file", str(f), "--from-legs"])
     assert code == 2
     assert Checkpoint.load(f).phase == "review"
+
+
+# --- gate 命令進 config(gate_cmds fallback)---
+
+
+def test_gate_without_cmd_falls_back_to_config(tmp_path):
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"gate_cmds": ["true"]}), encoding="utf-8")
+    code = main(["gate", "--file", str(cp_path)])
+    assert code == 0
+    assert Checkpoint.load(cp_path).phase == "qa"
+
+
+def test_gate_config_cmds_failure_routes_to_fix(tmp_path):
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"gate_cmds": ["false"]}), encoding="utf-8")
+    code = main(["gate", "--file", str(cp_path)])
+    assert code == 1
+    assert Checkpoint.load(cp_path).phase == "fix"
+
+
+def test_gate_cli_cmd_overrides_config(tmp_path):
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"gate_cmds": ["false"]}), encoding="utf-8")  # config 是紅的
+    code = main(["gate", "--file", str(cp_path), "--cmd", "true"])  # CLI 優先
+    assert code == 0
+    assert Checkpoint.load(cp_path).phase == "qa"
+
+
+def test_gate_no_cmds_anywhere_errors_not_fake_green(tmp_path, capsys):
+    # 空命令清單絕不能假綠:無 --cmd 且 config 無 gate_cmds → exit 2,checkpoint 不動
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    code = main(["gate", "--file", str(cp_path)])
+    assert code == 2
+    assert "no gate commands" in capsys.readouterr().err
+    assert Checkpoint.load(cp_path).phase == "gate"
+
+
+def test_gate_invalid_config_gate_cmds_errors(tmp_path, capsys):
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"gate_cmds": "true"}), encoding="utf-8")  # 非 list
+    code = main(["gate", "--file", str(cp_path)])
+    assert code == 2
+    assert "gate_cmds" in capsys.readouterr().err
+    assert Checkpoint.load(cp_path).phase == "gate"
+
+
+def test_status_gate_hint_is_fully_executable_with_config_cmds(tmp_path, capsys):
+    cp_path = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(cp_path)
+    (cp_path.parent / "config.json").write_text(
+        json.dumps({"gate_cmds": ["true"]}), encoding="utf-8")
+    main(["status", "--file", str(cp_path)])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "next: python3 -m devloop.cli gate --file %s" % cp_path
+    assert "<test-cmd>" not in lines[1]
+
+
+def test_status_gate_hint_keeps_skeleton_without_config(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="gate", change_id="c", branch="b").save(f)
+    main(["status", "--file", str(f)])
+    lines = capsys.readouterr().out.splitlines()
+    assert "<test-cmd>" in lines[1]

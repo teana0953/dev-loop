@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -9,6 +9,7 @@ from pathlib import Path
 class Config:
     finish: str | None = None
     auto_arm: bool = True
+    gate_cmds: list = field(default_factory=list)
 
 
 def load_config(path) -> Config:
@@ -19,7 +20,18 @@ def load_config(path) -> Config:
     return Config(
         finish=data.get("finish", None),
         auto_arm=bool(data.get("auto_arm", True)),
+        gate_cmds=data.get("gate_cmds", []),
     )
+
+
+def validate_gate_cmds(gate_cmds):
+    """gate_cmds 必須是非空字串的 list;非法拋 ValueError(fail loudly,
+    與 finish 值域驗證同精神——設定 typo 不得靜默退化)。"""
+    if not isinstance(gate_cmds, list) or not all(
+        isinstance(c, str) and c.strip() for c in gate_cmds
+    ):
+        raise ValueError("gate_cmds must be a list of non-empty strings, got %r" % (gate_cmds,))
+    return gate_cmds
 
 
 VALID_FINISH_VALUES = ("merge", "pr", "ask")

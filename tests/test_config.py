@@ -93,3 +93,34 @@ def test_resolve_invalid_config_not_masked_by_valid_meta_override():
 def test_resolve_error_names_source():
     with pytest.raises(ValueError, match="meta.finish"):
         resolve_finish(Config(finish="merge"), ChangeMeta(finish="pull-request"))
+
+
+# --- gate_cmds ---
+
+from devloop.config import validate_gate_cmds
+
+
+def test_loads_gate_cmds(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"gate_cmds": ["pytest -q", "ruff check ."]}), encoding="utf-8")
+    assert load_config(p).gate_cmds == ["pytest -q", "ruff check ."]
+
+
+def test_missing_gate_cmds_defaults_empty(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    assert load_config(p).gate_cmds == []
+
+
+def test_validate_gate_cmds_accepts_list_of_strings():
+    assert validate_gate_cmds(["pytest -q"]) == ["pytest -q"]
+    assert validate_gate_cmds([]) == []
+
+
+def test_validate_gate_cmds_rejects_non_list_and_empty_strings():
+    with pytest.raises(ValueError, match="gate_cmds"):
+        validate_gate_cmds("pytest -q")  # 字串不是 list
+    with pytest.raises(ValueError, match="gate_cmds"):
+        validate_gate_cmds(["pytest", ""])  # 空字串項
+    with pytest.raises(ValueError, match="gate_cmds"):
+        validate_gate_cmds([["pytest"]])  # 巢狀 list

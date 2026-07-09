@@ -22,7 +22,7 @@ TBD - created by archiving change status-show-change-id. Update Purpose after ar
 
 #### Scenario: gate phase 給命令骨架
 - **WHEN** 對 phase=gate 的 checkpoint 執行 `status`
-- **THEN** 第一行仍含 `phase=gate`,第二行以 `next: ` 開頭且含 `devloop.cli gate`
+- **THEN** 第一行仍含 `phase=gate`,第二行以 `next: ` 開頭且含 `devloop.cli gate`(config 有 `gate_cmds` 時給完整可執行命令,見 gate-commands-config)
 
 #### Scenario: apply 有 pending units 時優先提示
 - **WHEN** phase=apply 且 checkpoint `units[]` 有 `pending` 的 unit
