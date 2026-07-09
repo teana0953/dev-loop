@@ -7,7 +7,6 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    trigger: str = "local"
     finish: str | None = None
     auto_arm: bool = True
 
@@ -18,7 +17,6 @@ def load_config(path) -> Config:
         return Config()
     data = json.loads(p.read_text(encoding="utf-8"))
     return Config(
-        trigger=data.get("trigger", "local"),
         finish=data.get("finish", None),
         auto_arm=bool(data.get("auto_arm", True)),
     )
