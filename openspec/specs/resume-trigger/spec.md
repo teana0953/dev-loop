@@ -60,15 +60,6 @@ Checkpoint SHALL 支援選填欄位 `resume_exec`,於 save/load 間正確保存,
 - **WHEN** 建立 checkpoint 未指定 `resume_exec`
 - **THEN** `resume_exec` 為 None,且既有欄位行為不變
 
-### Requirement: 既有 resume 路徑向後相容
-
-系統 MUST 保留 `plan_resume` 決策與 `resume` / `auto-resume` 子命令的既有行為,供已知 reset 時間的精準睡眠使用。
-
-#### Scenario: 既有 plan_resume 行為不變
-
-- **WHEN** 以 now 與 reset_at 呼叫 `plan_resume`
-- **THEN** 回傳的 ready / sleep_seconds / phase 與本變更前一致
-
 ### Requirement: 寫 checkpoint 的子命令自動確保 watcher 在位
 所有會寫 checkpoint 的 CLI 子命令(現為 14 個:`start`、`event`、`gate`、`proposal-review`、`qa`、`legs-init`、`leg-done`、`review`、`units-init`、`unit-done`、`unit-claim`、`unit-resolve`、`units-merge`、`units-cleanup`;以「該子命令會呼叫 checkpoint save」為判準)SHALL 在 checkpoint 寫入成功後自動執行與 `arm-local` 相同的 idempotent watcher 確保邏輯(自動路徑 SHALL 不輸出到 stdout),條件是 checkpoint 的 `resume_exec` 非空且 config `auto_arm` 為 true。`resume_exec` 為空時 SHALL 靜默跳過。
 
