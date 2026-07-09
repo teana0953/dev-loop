@@ -92,6 +92,8 @@ review 報告格式:
   --file /your/project/.devloop/checkpoint.json
 ```
 
+> 各種續跑情境(token 用罄、主動接回、平行 units、escalated、watcher 排障)的操作步驟見 [docs/runbooks/resume.md](docs/runbooks/resume.md)。
+
 ## 開發本工具
 
 本 repo 是引擎(`devloop/`)與編排 skill(`skills/dev-loop/SKILL.md`)的原始碼家;`~/.claude/skills/dev-loop/` 是安裝副本。
