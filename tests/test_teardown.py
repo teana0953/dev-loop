@@ -87,3 +87,46 @@ def test_delete_merged_branch_false_for_unmerged(repo):
     (repo / "f.txt").write_text("x\n"); _run(repo, "add", "."); _run(repo, "commit", "-m", "f")
     _run(repo, "checkout", "main")
     assert delete_merged_branch(repo, "feat") is False  # 未 merged,-d 拒刪
+
+
+from devloop.checkpoint import Checkpoint
+from devloop.cli import main
+
+
+def _teardown_repo_with_checkpoint(repo, mode):
+    _run(repo, "checkout", "-b", "loop-x")
+    (repo / "f.txt").write_text("x\n"); _run(repo, "add", "."); _run(repo, "commit", "-m", "f")
+    _run(repo, "checkout", "main"); _run(repo, "merge", "--no-ff", "-m", "m", "loop-x")
+    cp = repo / ".devloop" / "checkpoint.json"
+    Checkpoint(phase="teardown", change_id="x", branch="loop-x",
+               finish_mode=mode).save(cp)
+    return cp
+
+
+def test_teardown_merge_deletes_branch_and_reaches_done(repo):
+    cp = _teardown_repo_with_checkpoint(repo, "merge")
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "merge"])
+    assert code == 0
+    assert Checkpoint.load(cp).phase == "done"
+    branches = subprocess.run(["git", "-C", str(repo), "branch"],
+                              capture_output=True, text=True).stdout
+    assert "loop-x" not in branches
+
+
+def test_teardown_pr_keeps_branch(repo):
+    cp = _teardown_repo_with_checkpoint(repo, "pr")
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "pr"])
+    assert code == 0
+    assert Checkpoint.load(cp).phase == "done"
+    branches = subprocess.run(["git", "-C", str(repo), "branch"],
+                              capture_output=True, text=True).stdout
+    assert "loop-x" in branches
+
+
+def test_teardown_idempotent_on_done(repo):
+    cp = _teardown_repo_with_checkpoint(repo, "merge")
+    main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "merge"])
+    # 已 done;重跑會嘗試 transition(done, teardown_done) → InvalidTransition,回非 0 但不炸
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "merge"])
+    assert code != 0
+    assert Checkpoint.load(cp).phase == "done"

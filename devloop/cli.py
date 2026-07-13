@@ -31,10 +31,14 @@ from devloop.statemachine import (
     HUMAN_RESUME_PROPOSE,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_RETRY_EXCEEDED,
+    TEARDOWN_DONE,
     InvalidTransition,
     PHASES,
     next_hint,
     transition,
+)
+from devloop.teardown import (
+    delete_merged_branch, disarm_watcher, prune_orphan_worktrees, sweep_change_meta,
 )
 from devloop.units import build_units, mark, pending_units
 from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths, worktree_exists
@@ -411,6 +415,33 @@ def _cmd_archive(args):
     return 0
 
 
+def _cmd_teardown(args):
+    """teardown phase 收尾:清殘留(watcher/orphan worktree/change meta)後,
+    依 mode 決定是否刪短命分支,再 apply TEARDOWN_DONE 推進 phase → done。
+    清理各步驟 idempotent、非致命失敗僅印字不阻斷;真正會擋住的只有 phase 不對時
+    transition 拋出的 InvalidTransition。"""
+    cp = Checkpoint.load(args.file)
+    wt_root = args.wt_root or (Path(args.file).parent / "wt")
+    print("watcher: %s" % disarm_watcher(args.file))
+    print("worktrees pruned: %d" % prune_orphan_worktrees(args.repo, wt_root))
+    if sweep_change_meta(args.file, cp.change_id):
+        print("swept change meta: %s" % cp.change_id)
+    if args.mode == "merge":
+        ok = delete_merged_branch(args.repo, cp.branch)
+        print("branch %s: %s" % (cp.branch, "deleted" if ok else "kept (unmerged/absent)"))
+    else:
+        print("branch %s: kept (pr)" % cp.branch)
+    from_phase = cp.phase
+    try:
+        cp = _apply_event(cp, TEARDOWN_DONE, args.max)
+    except InvalidTransition as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    _save_with_history(cp, args, TEARDOWN_DONE, from_phase)
+    print("phase=%s" % cp.phase)
+    return 0
+
+
 def _cmd_finish(args):
     cp = Checkpoint.load(args.file)
     config = load_config(args.config)
@@ -655,6 +686,14 @@ def build_parser():
     p_archive = sub.add_parser("archive")
     p_archive.add_argument("--file", required=True)
     p_archive.set_defaults(func=_cmd_archive)
+
+    p_teardown = sub.add_parser("teardown")
+    p_teardown.add_argument("--file", required=True)
+    p_teardown.add_argument("--repo", default=".")
+    p_teardown.add_argument("--mode", required=True, choices=("merge", "pr"))
+    p_teardown.add_argument("--wt-root", dest="wt_root", default=None)
+    p_teardown.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_teardown.set_defaults(func=_cmd_teardown)
 
     p_finish = sub.add_parser("finish")
     p_finish.add_argument("--file", required=True)
