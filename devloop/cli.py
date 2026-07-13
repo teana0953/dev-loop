@@ -48,6 +48,8 @@ def _ensure_armed_after_save(cp, args):
     """checkpoint save 後自動確保 watcher 在位。靜默,失敗僅 stderr 警告。"""
     if not cp.resume_exec:
         return
+    if cp.phase == "done":
+        return  # 終態不再需要 watcher(teardown 已 disarm,勿重新拉起)
     config = load_config(Path(args.file).parent / "config.json")
     if not config.auto_arm:
         return

@@ -130,3 +130,21 @@ def test_teardown_idempotent_on_done(repo):
     code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "merge"])
     assert code != 0
     assert Checkpoint.load(cp).phase == "done"
+
+
+def test_teardown_done_does_not_rearm_watcher(repo):
+    """teardown 先 disarm_watcher,結尾 _save_with_history 走 auto-arm 路徑;
+    done 終態不該被重新 arm(否則永遠對 done 的 checkpoint 續跑,抵消 disarm)。"""
+    _run(repo, "checkout", "-b", "loop-x")
+    (repo / "f.txt").write_text("x\n"); _run(repo, "add", "."); _run(repo, "commit", "-m", "f")
+    _run(repo, "checkout", "main"); _run(repo, "merge", "--no-ff", "-m", "m", "loop-x")
+    devloop_dir = repo / ".devloop"
+    devloop_dir.mkdir(parents=True, exist_ok=True)
+    (devloop_dir / "config.json").write_text('{"auto_arm": true}')
+    cp = devloop_dir / "checkpoint.json"
+    Checkpoint(phase="teardown", change_id="x", branch="loop-x",
+               finish_mode="merge", resume_exec="sleep 999").save(cp)
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "merge"])
+    assert code == 0
+    assert Checkpoint.load(cp).phase == "done"
+    assert not (devloop_dir / "watcher.pid").exists()  # 終態不得重新 arm
