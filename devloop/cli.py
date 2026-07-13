@@ -139,6 +139,9 @@ def _cmd_event(args):
         cp.iteration = 0
         cp.propose_attempts = 0
         cp.gate_failures = 0
+    # 若提供 --finish-mode 則寫入 checkpoint
+    if getattr(args, "finish_mode", None):
+        cp.finish_mode = args.finish_mode
     _save_with_history(cp, args, args.event, from_phase)
     print("phase=%s iteration=%d" % (cp.phase, cp.iteration))
     return 0
@@ -582,6 +585,8 @@ def build_parser():
     p_event.add_argument("--file", required=True)
     p_event.add_argument("--event", required=True)
     p_event.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p_event.add_argument("--finish-mode", dest="finish_mode",
+                         choices=("merge", "pr"), default=None)
     p_event.set_defaults(func=_cmd_event)
 
     p_gate = sub.add_parser("gate")

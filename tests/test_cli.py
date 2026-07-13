@@ -1564,3 +1564,21 @@ def test_start_over_corrupt_checkpoint_refused_without_force(tmp_path, capsys):
     assert main(["start", "--file", str(f), "--change-id", "new", "--branch", "b",
                  "--force"]) == 0
     assert Checkpoint.load(f).change_id == "new"
+
+
+def test_event_finish_done_stores_finish_mode(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(f)
+    code = main(["event", "--file", str(f), "--event", "finish_done",
+                 "--finish-mode", "merge"])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.phase == "teardown"
+    assert cp.finish_mode == "merge"
+
+
+def test_event_without_finish_mode_leaves_it_none(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="apply", change_id="c", branch="b").save(f)
+    main(["event", "--file", str(f), "--event", "apply_done"])
+    assert Checkpoint.load(f).finish_mode is None
