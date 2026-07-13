@@ -18,7 +18,7 @@ def disarm_watcher(checkpoint_path) -> str:
     result = "absent"
     try:
         pid = int(pid_path.read_text().strip())
-    except ValueError:
+    except (OSError, ValueError):
         pid = None
     if pid is not None:
         try:
@@ -42,9 +42,10 @@ def prune_orphan_worktrees(repo, wt_root) -> int:
     removed = 0
     for p in list_worktree_paths(repo):
         if p.startswith(prefix):
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", p],
-                           capture_output=True, text=True)
-            removed += 1
+            r = subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", p],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                removed += 1
     try:
         if root.exists() and not any(root.iterdir()):
             root.rmdir()
@@ -62,7 +63,10 @@ def sweep_change_meta(checkpoint_path, change_id) -> bool:
         return False
     dest = root / "archive" / str(change_id)
     dest.mkdir(parents=True, exist_ok=True)
-    meta.replace(dest / meta.name)
+    try:
+        meta.replace(dest / meta.name)
+    except FileNotFoundError:
+        return False
     return True
 
 
