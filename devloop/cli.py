@@ -94,7 +94,7 @@ def _cmd_status(args):
     cp = Checkpoint.load(args.file)
     config = load_config(Path(args.file).parent / "config.json")
     hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs,
-                     gate_cmds=config.gate_cmds)
+                     gate_cmds=config.gate_cmds, finish_mode=cp.finish_mode)
     _warn_if_watcher_missing(cp, args.file)
     if args.json:
         payload = asdict(cp)

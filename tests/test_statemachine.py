@@ -20,6 +20,7 @@ from devloop.statemachine import (
     REVIEW_BLOCKING_CODE,
     REVIEW_BLOCKING_PROPOSAL,
     REVIEW_NO_BLOCKING,
+    TEARDOWN_DONE,
     InvalidTransition,
     next_hint,
     transition,
@@ -94,8 +95,8 @@ def test_qa_invalid_event_raises():
         transition("qa", 1, GATE_PASS)
 
 
-def test_merge_finish_done_to_done():
-    assert transition("merge", 2, FINISH_DONE) == ("done", 2)
+def test_merge_finish_done_to_teardown():
+    assert transition("merge", 2, FINISH_DONE) == ("teardown", 2)
 
 
 def test_merge_only_accepts_finish_done():
@@ -240,3 +241,22 @@ def test_next_hint_gate_with_config_cmds_gives_full_command():
 
 def test_next_hint_gate_without_config_cmds_keeps_skeleton():
     assert "<test-cmd>" in next_hint("gate", "cp.json", gate_cmds=[])
+
+
+def test_teardown_done_to_done():
+    from devloop.statemachine import TEARDOWN_DONE
+    assert transition("teardown", 2, TEARDOWN_DONE) == ("done", 2)
+
+
+def test_teardown_in_phases():
+    assert "teardown" in PHASES
+
+
+def test_next_hint_teardown_fills_finish_mode():
+    h = next_hint("teardown", "/x/cp.json", finish_mode="merge")
+    assert h.startswith("next: ") and "teardown" in h and "--mode merge" in h
+
+
+def test_next_hint_teardown_skeleton_when_mode_absent():
+    h = next_hint("teardown", "/x/cp.json")
+    assert "<merge|pr>" in h

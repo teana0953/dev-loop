@@ -11,6 +11,7 @@ PHASES = (
     "review",
     "fix",
     "merge",
+    "teardown",
     "escalated",
     "done",
 )
@@ -30,6 +31,7 @@ REVIEW_BLOCKING_PROPOSAL = "review_blocking_proposal"
 FIX_DONE = "fix_done"
 FINISH_DONE = "finish_done"
 PROPOSE_DONE = "propose_done"
+TEARDOWN_DONE = "teardown_done"
 PROPOSE_RETRY_EXCEEDED = "propose_retry_exceeded"
 GATE_RETRY_EXCEEDED = "gate_retry_exceeded"
 HUMAN_RESUME_PROPOSE = "human_resume_propose"
@@ -72,13 +74,21 @@ _TERMINAL_HINTS = {
 }
 
 
-def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=None):
+def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=None,
+              finish_mode=None):
     """依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。
 
     gate_cmds 非空(config 已存 gate 命令)時,gate hint 給完整可執行命令
-    (引擎會 fallback 到 config),而非 `<test-cmd>` 骨架。"""
+    (引擎會 fallback 到 config),而非 `<test-cmd>` 骨架。
+
+    finish_mode 有值時(checkpoint 已記錄 merge/pr),teardown hint 給完整
+    可執行命令;無值時給 `<merge|pr>` 骨架待人工/引擎補上。"""
     if phase == "gate" and gate_cmds:
         return "next: python3 -m devloop.cli gate --file %s" % checkpoint_path
+    if phase == "teardown":
+        mode = finish_mode or "<merge|pr>"
+        return ("next: python3 -m devloop.cli teardown --file %s --repo . --mode %s"
+                % (checkpoint_path, mode))
     if phase in ("apply", "fix") and units:
         pending = [u["id"] for u in units if u.get("status") in ("pending", "in_progress")]
         if pending:
@@ -133,6 +143,8 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
     if phase == "fix" and event == FIX_DONE:
         return ("gate", iteration)
     if phase == "merge" and event == FINISH_DONE:
+        return ("teardown", iteration)
+    if phase == "teardown" and event == TEARDOWN_DONE:
         return ("done", iteration)
     if phase == "propose" and event == PROPOSE_DONE:
         return ("proposal_review", iteration)
