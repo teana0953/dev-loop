@@ -22,6 +22,7 @@ class Checkpoint:
     review_legs: list = field(default_factory=list)
     propose_attempts: int = 0
     gate_failures: int = 0
+    finish_mode: str = None
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()

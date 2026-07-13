@@ -123,3 +123,21 @@ def test_load_legacy_checkpoint_without_propose_attempts_or_gate_failures(tmp_pa
     loaded = Checkpoint.load(path)
     assert loaded.propose_attempts == 0
     assert loaded.gate_failures == 0
+
+
+def test_finish_mode_defaults_none_and_roundtrips(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(f)
+    assert Checkpoint.load(f).finish_mode is None
+    cp = Checkpoint.load(f)
+    cp.finish_mode = "merge"
+    cp.save(f)
+    assert Checkpoint.load(f).finish_mode == "merge"
+
+
+def test_load_legacy_checkpoint_without_finish_mode(tmp_path):
+    import json
+    f = tmp_path / "cp.json"
+    f.write_text(json.dumps(
+        {"phase": "merge", "change_id": "c", "branch": "b"}), encoding="utf-8")
+    assert Checkpoint.load(f).finish_mode is None
