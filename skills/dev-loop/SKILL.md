@@ -59,10 +59,20 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 9. **Fix**:機械性 → Sonnet;架構性 → Opus(`superpowers=true` 且問題難纏時,subagent prompt 要求以 `superpowers:systematic-debugging` 找根因再修)。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
 10. **收尾(finish 決策驅動)**:review 無 blocking 進入 merge phase 後,先問引擎決策:
    `python3 -m devloop.cli finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
-   - stdout `finish: merge` → 短命分支 merge 回 trunk → `python3 -m devloop.cli archive --file .devloop/checkpoint.json`;`followup: <path>` 指出已落地的 non-blocking follow-up 檔。archive 會自動把該 change 的工作檔(報告/followup/history 等)收進 `.devloop/archive/<change-id>/`,不需手動清理。
-   - stdout `finish: pr` → `archive`(commit change 移檔)→ push 分支 → `gh pr create`(PR body 放入 `--- PR body follow-up ---` 之後印出的內容)→ 等人 review/合並。
-   - stdout `finish: ask` → ✋ 停下問使用者選 merge 或 pr,再依上述對應路徑執行(選定後務必重跑 `finish` 以落地 follow-up)。
-   - 上述 git 操作(merge/archive 或開 PR)實際完成後,呼叫 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event finish_done` 推進 `merge → done`(終態)。
+   收尾一律「**在短命分支上先 archive＋commit,再整合**」,讓 spec sync 隨分支原子併入。
+   - stdout `finish: merge`:
+     1. **短命分支上** `python3 -m devloop.cli archive --file .devloop/checkpoint.json`(= `openspec archive` sync 主規格＋移檔,並收工作檔進 `.devloop/archive/<id>/`)。
+     2. **短命分支上 commit** openspec 變動:`git add openspec/ && git commit -m "chore(<id>): archive change + sync specs"`。
+     3. **原子 merge 回 trunk**:`git checkout <trunk> && git merge --no-ff <branch>`。
+     4. `python3 -m devloop.cli event --file .devloop/checkpoint.json --event finish_done --finish-mode merge`(→ phase=teardown)。
+   - stdout `finish: pr`:
+     1. **短命分支上** `archive` ＋ `git add openspec/ && git commit`(同上)。
+     2. push 分支 → `gh pr create`(PR body 放入 `finish` 印出 `--- PR body follow-up ---` 之後的內容)。
+     3. `event --event finish_done --finish-mode pr`(→ phase=teardown)。
+   - stdout `finish: ask` → ✋ 停下問使用者選 merge 或 pr,再依上述對應路徑執行(選定後務必重跑 `finish` 以落地 follow-up,並在 `event` 帶對應 `--finish-mode`)。
+   - **teardown(phase=teardown)**:整合完成後跑
+     `python3 -m devloop.cli teardown --file .devloop/checkpoint.json --repo . --mode <merge|pr>`
+     子命令 idempotent 清殘留(disarm watcher、`worktree prune`、補收漏網 meta;merge mode 額外 `git branch -d` 已 merged 的短命分支,pr mode 保留分支待 PR 併掉),清完自行推進 `teardown → done`(終態)。
 
 ## Superpowers 整合
 
@@ -96,6 +106,7 @@ python3 -m devloop.cli status --file .devloop/checkpoint.json
 
 - 第二行是完整命令骨架(如 `next: python3 -m devloop.cli gate --file ... --cmd "<test-cmd>"`)→ 依骨架補上實際參數執行。
 - 第二行是 `next: dispatch <說明>`(判斷型步驟,如 apply/fix/propose)→ 依「流程」對應步驟繼續判斷與 dispatch。
+- 第二行是 `next: python3 -m devloop.cli teardown …`(phase=teardown)→ 整合已完成、只差清殘留:依骨架補 `--mode`(checkpoint 的 `finish_mode` 已填時 hint 會直接帶出)執行,子命令會推進到 done。
 - 第二行是 `next: (done)` → loop 已完成,無需動作。
 - 第二行是 `next: (escalated)…` → 走「escalated 升級與人工續跑」。
 - 若 units 有 pending 或 review legs 未收齊,`next:` 行會優先提示該未完成項(如 `units-status` 或缺 leg 報告),照做即可。
