@@ -19,7 +19,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 無論是第一次啟動還是被觸發器續跑,每回合遵循同一套邏輯:
 
-1. **讀 phase**:有 checkpoint 就跑 `python3 -m devloop.cli status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers` 或 `auto_approve` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
+1. **讀 phase**:有 checkpoint 就跑 `devloop status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers` 或 `auto_approve` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
 2. **推進到卡點**:照 `next:` hint(或流程步驟)一路做到下一個卡點——✋ 人工批准點,或本回合 token/時間用盡。
 3. **未到終態即本回合結束**:若 phase 還不是 `done` 或停等人工的 `escalated`,本回合到此為止;token/配額恢復後由引擎自動 arm 的 detached watcher 冷啟動續跑(見「Token 用罄續跑」),本 skill 不需自行排程。
 
@@ -27,29 +27,29 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 1. **Brainstorm(Opus)**:產出設計文件——`superpowers=true` 用 `superpowers:brainstorming`,false 直接與使用者對話探索需求後撰寫。`auto_approve=false` → ✋ 等使用者批准;true → 視為批准,直接進步驟 2。
 2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
-3. **啟動引擎 + 驗證提案**:`python3 -m devloop.cli start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `python3 -m devloop.cli validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。若 start 報 `checkpoint exists`(exit 2):既有 loop 尚未完結——先跑 `status` 判斷該 resume 還是升級給使用者,**不要**逕自 `--force` 覆蓋。
+3. **啟動引擎 + 驗證提案**:`devloop start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `devloop validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。若 start 報 `checkpoint exists`(exit 2):既有 loop 尚未完結——先跑 `status` 判斷該 resume 還是升級給使用者,**不要**逕自 `--force` 覆蓋。
 4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
-   `python3 -m devloop.cli proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
+   `devloop proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;`auto_approve=false` → ✋ 此時等使用者批准提案;true → 視為批准,直接進步驟 5。
-   - blocking(proposal)且未超過 `--max-propose`(預設 3):`propose_attempts` +1,phase=propose,自動重新 propose;propose 完成後呼叫 `python3 -m devloop.cli event --file .devloop/checkpoint.json --event propose_done` 轉回 proposal_review,再跑本步驟的 proposal-review。
+   - blocking(proposal)且未超過 `--max-propose`(預設 3):`propose_attempts` +1,phase=propose,自動重新 propose;propose 完成後呼叫 `devloop event --file .devloop/checkpoint.json --event propose_done` 轉回 proposal_review,再跑本步驟的 proposal-review。
    - blocking(proposal)且超過 `--max-propose`:引擎自動改轉 escalated(`propose_retry_exceeded`),✋ 升級給使用者(見「escalated 升級與人工續跑」)。
    - blocking(design)→ escalated,✋ 回 brainstorm 升級。
 5. **Apply(Sonnet · TDD)**:
    - **判斷平行**:讀 `.devloop/changes/<change-id>.json` 的 `parallel_groups`。
    - **串行**(0 或 1 群):逐 task red→green→refactor(同 v1;`superpowers=true` 時要求遵循 `superpowers:test-driven-development`)。
    - **平行**(≥2 群):
-     1. `python3 -m devloop.cli units-init --file .devloop/checkpoint.json --repo . --meta .devloop/changes/<id>.json --wt-root .devloop/wt`
+     1. `devloop units-init --file .devloop/checkpoint.json --repo . --meta .devloop/changes/<id>.json --wt-root .devloop/wt`
      2. 對每個 unit,dispatch 一個 Sonnet subagent 在其 `worktree` 上做該群 tasks(TDD);完成後該 subagent 回報,主編排呼叫 `unit-done --id <gid>`。
      3. 全部 done 後:`units-merge --file ... --repo .`。exit 1(衝突)→ 對 conflict 的 unit **退串行**:在最新短命分支 HEAD 重做該群 tasks;衝突 unit 在短命分支重做後 `unit-resolve --id <gid>`(標 merged + 清 worktree),再續 `units-merge`。
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
    - 完成後 `event --event apply_done`。
-6. **Hard gate**:`python3 -m devloop.cli gate --file .devloop/checkpoint.json [--cmd "<test-cmd>" ...] [--max-gate N]`。config 有 `gate_cmds` 時不帶 `--cmd` 直接跑;否則帶 `--cmd`(每個可為多字詞命令,如 `--cmd "pytest tests/"`)**並同時把命令寫進 config 的 `gate_cmds`** 供之後續跑零判斷。兩者皆無 → exit 2(不假綠)。
+6. **Hard gate**:`devloop gate --file .devloop/checkpoint.json [--cmd "<test-cmd>" ...] [--max-gate N]`。config 有 `gate_cmds` 時不帶 `--cmd` 直接跑;否則帶 `--cmd`(每個可為多字詞命令,如 `--cmd "pytest tests/"`)**並同時把命令寫進 config 的 `gate_cmds`** 供之後續跑零判斷。兩者皆無 → exit 2(不假綠)。
    - exit 0 → 階段已進到 qa。
    - exit 1:`gate_failures` +1(未超過 `--max-gate`,預設 3),階段已進到 fix,回步驟 9。
    - exit 3:連續失敗超過 `--max-gate`,引擎已轉 escalated(`gate_retry_exceeded`);✋ 升級給使用者(見「escalated 升級與人工續跑」)。失敗分支末行都會印 `phase=`,exit code 即可分流,不需再讀 status。`gate_failures` 不隨通過重置,只在人工續跑時歸零。
 7. **QA Gate(QA subagent;可多情境平行)**:gate 全綠後 phase=qa。subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
-   `python3 -m devloop.cli qa --file .devloop/checkpoint.json --report <qa.json>`
+   `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
 8. **Review(code ‖ uiux 平行 legs)**:`legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code=Opus、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)
@@ -58,20 +58,20 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
    - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者(見「escalated 升級與人工續跑」)。
 9. **Fix**:機械性 → Sonnet;架構性 → Opus(`superpowers=true` 且問題難纏時,subagent prompt 要求以 `superpowers:systematic-debugging` 找根因再修)。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
 10. **收尾(finish 決策驅動)**:review 無 blocking 進入 merge phase 後,先問引擎決策:
-   `python3 -m devloop.cli finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
+   `devloop finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
    收尾一律「**在短命分支上先 archive＋commit,再整合**」,讓 spec sync 隨分支原子併入。
    - stdout `finish: merge`:
-     1. **短命分支上** `python3 -m devloop.cli archive --file .devloop/checkpoint.json`(= `openspec archive` sync 主規格＋移檔,並收工作檔進 `.devloop/archive/<id>/`)。
+     1. **短命分支上** `devloop archive --file .devloop/checkpoint.json`(= `openspec archive` sync 主規格＋移檔,並收工作檔進 `.devloop/archive/<id>/`)。
      2. **短命分支上 commit** openspec 變動:`git add openspec/ && git commit -m "chore(<id>): archive change + sync specs"`。
      3. **原子 merge 回 trunk**:`git checkout <trunk> && git merge --no-ff <branch>`。
-     4. `python3 -m devloop.cli event --file .devloop/checkpoint.json --event finish_done --finish-mode merge`(→ phase=teardown)。
+     4. `devloop event --file .devloop/checkpoint.json --event finish_done --finish-mode merge`(→ phase=teardown)。
    - stdout `finish: pr`:
      1. **短命分支上** `archive` ＋ `git add openspec/ && git commit`(同上)。
      2. push 分支 → `gh pr create`(PR body 放入 `finish` 印出 `--- PR body follow-up ---` 之後的內容)。
      3. `event --event finish_done --finish-mode pr`(→ phase=teardown)。
    - stdout `finish: ask` → ✋ 停下問使用者選 merge 或 pr,再依上述對應路徑執行(選定後務必重跑 `finish` 以落地 follow-up,並在 `event` 帶對應 `--finish-mode`)。
    - **teardown(phase=teardown)**:整合完成後跑
-     `python3 -m devloop.cli teardown --file .devloop/checkpoint.json --repo . --mode <merge|pr>`
+     `devloop teardown --file .devloop/checkpoint.json --repo . --mode <merge|pr>`
      子命令 idempotent 清殘留(disarm watcher、`worktree prune`、補收漏網 meta;merge mode 額外 `git branch -d` 已 merged 的短命分支,pr mode 保留分支待 PR 併掉),清完自行推進 `teardown → done`(終態)。
 
 ## Superpowers 整合
@@ -93,20 +93,20 @@ phase 進到 `escalated` 的三種來源:proposal-review 判 design 層 blocking
 
 使用者處理完根因後(修正設計方向、重新規劃 propose 內容,或手動排除卡住 gate 的問題),依情境選一個人工續跑出口——套用成功後 `iteration`、`propose_attempts`、`gate_failures` 三個計數會全部歸零,重新起算上限:
 
-- `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_propose` → phase=propose,續跑步驟 2(重新 propose)。
-- `python3 -m devloop.cli event --file .devloop/checkpoint.json --event human_resume_fix` → phase=fix,續跑步驟 9(直接修)。
+- `devloop event --file .devloop/checkpoint.json --event human_resume_propose` → phase=propose,續跑步驟 2(重新 propose)。
+- `devloop event --file .devloop/checkpoint.json --event human_resume_fix` → phase=fix,續跑步驟 9(直接修)。
 
 ## Resume(續跑)
 
 冷啟動續跑(被 watcher 或 `/loop` 喚醒、或使用者說「dev-loop resume」)不需要記哪個 phase 對應哪個命令——跑一次 `status`,照第二行 `next:` 行動即可:
 
 ```
-python3 -m devloop.cli status --file .devloop/checkpoint.json
+devloop status --file .devloop/checkpoint.json
 ```
 
-- 第二行是完整命令骨架(如 `next: python3 -m devloop.cli gate --file ... --cmd "<test-cmd>"`)→ 依骨架補上實際參數執行。
+- 第二行是完整命令骨架(如 `next: devloop gate --file ... --cmd "<test-cmd>"`)→ 依骨架補上實際參數執行。
 - 第二行是 `next: dispatch <說明>`(判斷型步驟,如 apply/fix/propose)→ 依「流程」對應步驟繼續判斷與 dispatch。
-- 第二行是 `next: python3 -m devloop.cli teardown …`(phase=teardown)→ 整合已完成、只差清殘留:依骨架補 `--mode`(checkpoint 的 `finish_mode` 已填時 hint 會直接帶出)執行,子命令會推進到 done。
+- 第二行是 `next: devloop teardown …`(phase=teardown)→ 整合已完成、只差清殘留:依骨架補 `--mode`(checkpoint 的 `finish_mode` 已填時 hint 會直接帶出)執行,子命令會推進到 done。
 - 第二行是 `next: (done)` → loop 已完成,無需動作。
 - 第二行是 `next: (escalated)…` → 走「escalated 升級與人工續跑」。
 - 若 units 有 pending 或 review legs 未收齊,`next:` 行會優先提示該未完成項(如 `units-status` 或缺 leg 報告),照做即可。
