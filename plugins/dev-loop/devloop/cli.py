@@ -125,7 +125,7 @@ def _warn_if_watcher_missing(cp, checkpoint_path):
     if state != "running":
         print(
             "warning: watcher not running; re-arm: "
-            "python3 -m devloop.cli arm-local --file %s" % checkpoint_path,
+            "devloop arm-local --file %s" % checkpoint_path,
             file=sys.stderr,
         )
 
@@ -376,7 +376,7 @@ def _cmd_watcher_status(args):
             print("output tail: %s" % tail)
     needed = cp.phase != "done" and bool(cp.resume_exec)
     if needed and state != "running":
-        print("hint: python3 -m devloop.cli arm-local --file %s" % args.file)
+        print("hint: devloop arm-local --file %s" % args.file)
         return 1
     return 0
 
