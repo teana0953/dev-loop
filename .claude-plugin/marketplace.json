@@ -1,0 +1,12 @@
+{
+  "name": "dev-loop",
+  "owner": { "name": "Tina Liang", "email": "teana0953@gmail.com" },
+  "description": "dev-loop plugin 的自帶 marketplace。",
+  "plugins": [
+    {
+      "name": "dev-loop",
+      "source": "./plugins/dev-loop",
+      "description": "固定流程 agent 開發 loop(需 python3/git/openspec CLI)。"
+    }
+  ]
+}
