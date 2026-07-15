@@ -9,7 +9,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## 設定
 
-- `finish`:收尾策略 `merge`|`pr`|`ask`(未設等同 `ask`);可被 `.devloop/changes/<id>.json` 的 `finish` override。
+- `finish`:收尾策略 `merge`|`pr`|`ask`(未設等同 `ask`);可被 `.devloop/changes/<id>.json` 的 `finish` override。**未設 → 第一次啟動時一併問使用者並寫回**(同 `superpowers`/`auto_approve`)。
 - `gate_cmds`:list,專案的 test/lint/build 命令。設了之後 gate 可不帶 `--cmd`;**首次為專案跑 gate 時,把推斷出的命令寫進 config 的 `gate_cmds`**,之後(含冷啟動續跑)就不用再推斷。
 - `superpowers`:布林。true 時判斷型步驟優先用 superpowers skills 驅動(對照見「Superpowers 整合」);false 用內建做法。未設(或非布林)→ 第一次啟動時 ✋ 問使用者並寫回 config。
 - `auto_approve`:布林,預設 false。true 時「批准設計」「批准提案」兩個 ✋ 關卡自動視為批准、不停;**escalated 恆停不受此鍵影響**(它是重試耗盡/設計層 blocking 的安全閥),收尾詢問由 `finish` 鍵管。未設 → 第一次啟動時 ✋ 問使用者並寫回 config。
@@ -19,7 +19,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 無論是第一次啟動還是被觸發器續跑,每回合遵循同一套邏輯:
 
-1. **讀 phase**:有 checkpoint 就跑 `devloop status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers` 或 `auto_approve` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
+1. **讀 phase**:有 checkpoint 就跑 `devloop status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers`、`auto_approve` 或 `finish` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動;收尾策略 merge/pr/ask)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
 2. **推進到卡點**:照 `next:` hint(或流程步驟)一路做到下一個卡點——✋ 人工批准點,或本回合 token/時間用盡。
 3. **未到終態即本回合結束**:若 phase 還不是 `done` 或停等人工的 `escalated`,本回合到此為止;token/配額恢復後由引擎自動 arm 的 detached watcher 冷啟動續跑(見「Token 用罄續跑」),本 skill 不需自行排程。
 
