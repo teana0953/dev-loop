@@ -520,6 +520,35 @@ def test_arm_local_spawns_real_watcher(tmp_path):
             pass
 
 
+def test_spawn_watcher_sets_pythonpath_to_engine_root(monkeypatch):
+    # _spawn_watcher 未被 mock:直接攔截 subprocess.Popen,驗證傳給子行程的
+    # PYTHONPATH 第一段能定位到引擎根目錄(可 import devloop),且保留既有 PYTHONPATH。
+    import devloop.cli as cli
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 4321
+
+    def _fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("PYTHONPATH", "/pre/existing")
+
+    pid = cli._spawn_watcher(["echo", "hi"], 1800)
+
+    assert pid == 4321
+    env = captured["env"]
+    pp = env["PYTHONPATH"].split(os.pathsep)
+    engine_root = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+    assert pp[0] == engine_root
+    assert os.path.exists(os.path.join(engine_root, "devloop", "__init__.py"))
+    assert "/pre/existing" in pp
+
+
 def test_ensure_armed_spawns_when_no_pidfile(tmp_path, monkeypatch, capsys):
     # ensure_armed 是從 _cmd_arm_local 抽出的核心函式:回傳結果,不印字。
     import devloop.cli as cli
