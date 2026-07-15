@@ -287,7 +287,10 @@ def _spawn_watcher(exec_command, heartbeat, log_path=None):
     ]
     if log_path:
         argv += ["--log", str(log_path)]
-    proc = subprocess.Popen(argv, start_new_session=True)
+    env = os.environ.copy()
+    pythonpath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env["PYTHONPATH"] = pythonpath
+    proc = subprocess.Popen(argv, start_new_session=True, env=env)
     return proc.pid
 
 
