@@ -20,7 +20,7 @@
 
 - **散布形態**:同 repo 內自帶一份 marketplace,`make package` 從 repo 原始碼**建置**出乾淨 plugin 子樹並 commit 進 repo;`make check` 守漂移。使用者 `/plugin marketplace add <這個 repo 或本地路徑>` 即可直接裝。
 - **引擎呼叫統一裸 `devloop`**:利用 `bin/` 進 PATH,把 SKILL/command 內文與引擎 `next_hint` 印出的 `python3 -m devloop.cli` 全部改成裸 `devloop <args>`;plugin 夾帶一個 `bin/devloop` wrapper(自定位 PYTHONPATH → 轉呼叫 `python3 -m devloop.cli`)。**同一份 SKILL/引擎既能當 plugin 跑、也能本機 dogfood**(dogfood 即安裝本機建出的 plugin)。
-- **前置檢查**:`hooks/hooks.json` 掛 SessionStart → `bin/check-deps.sh`,缺 `python3`/`git`/`openspec` 時 stderr 提示(非阻斷)。
+- **首跑引導強化**:`hooks/hooks.json` 掛 SessionStart → `bin/check-deps.sh`,檢查 `python3`/`git`/`openspec` 與「當前專案是否 `openspec init` 過」,缺就非阻斷提示;SKILL 首跑問答由兩鍵擴充為含 `finish` 三鍵(§7)。
 
 ## 3. 目錄結構
 
@@ -124,7 +124,9 @@ exec python3 -m devloop.cli "$@"
 
 實作採「repo 存一份最終 `marketplace/.claude-plugin/marketplace.json`,由 `make package` 產生/覆寫」;version 與 plugin.json 同步(package 時從 plugin.json 帶入,避免兩處手改漂移)。
 
-## 7. SessionStart 相依檢查
+## 7. 首跑引導(相依 + 專案就緒 + 設定)
+
+現況(查證):首跑已有 SKILL 互動問一次 `superpowers`/`auto_approve` 並寫回 config、gate_cmds 惰性捕捉;但**無環境/相依檢查**、**無「專案是否 `openspec init` 過」守門**,openspec 沒裝或專案沒 init 都是跑到 loop 中途才炸。本節把首跑體驗補齊到適合發給新使用者。
 
 ### 7.1 `hooks/hooks.json`
 
@@ -143,11 +145,13 @@ exec python3 -m devloop.cli "$@"
 }
 ```
 
-### 7.2 `bin/check-deps.sh`(非阻斷)
+### 7.2 `bin/check-deps.sh`(相依 + 專案就緒,非阻斷)
+
+除三個外部工具,**也檢查當前專案是否 `openspec init` 過**(cwd 有無 `openspec/` 目錄);缺就提示對應修法。全部非阻斷(exit 0),只印 stderr。
 
 ```bash
 #!/usr/bin/env bash
-# dev-loop 前置檢查:缺工具只提示不阻斷(exit 0)。
+# dev-loop 首跑檢查:缺工具/專案未就緒只提示不阻斷(exit 0)。
 missing=()
 command -v python3  >/dev/null 2>&1 || missing+=("python3")
 command -v git      >/dev/null 2>&1 || missing+=("git")
@@ -155,10 +159,22 @@ command -v openspec >/dev/null 2>&1 || missing+=("openspec(npm i -g openspec)")
 if [ ${#missing[@]} -gt 0 ]; then
   printf 'dev-loop 前置缺少:%s\n' "${missing[*]}" >&2
 fi
+# 專案就緒:當前目錄未 openspec init 時提示(僅提示,不自動 init)
+if command -v openspec >/dev/null 2>&1 && [ ! -d openspec ]; then
+  printf 'dev-loop:當前專案尚未初始化 OpenSpec,執行 `openspec init --tools claude`。\n' >&2
+fi
 exit 0
 ```
 
-需 `chmod +x`。openspec 版本假設 ≥1.5.0(archive 內建 sync 主規格)。
+需 `chmod +x`。openspec 版本假設 ≥1.5.0(archive 內建 sync 主規格)。openspec CLI 不存在時跳過專案檢查(避免與「缺 openspec」訊息重複)。
+
+### 7.3 首跑設定問答擴充 `finish`
+
+SKILL 核心迴圈步驟 1 的首跑問答,現在問 `superpowers`/`auto_approve` 兩鍵;**擴充為同時問 `finish`**(收尾策略 merge/pr/ask),一次問齊三鍵並寫回 `.devloop/config.json`,讓新使用者一開始就設定好收尾方式,而非預設悶著走 `ask`。
+
+- 判定「未設」:`config.finish` 為 `None`(缺鍵)時才問;已設則沿用(可被 change meta override,語義不變)。
+- 這是 **SKILL.md 編排層改動**(prose + 寫 config),**不動引擎**:`resolve_finish` 值域與 override 邏輯完全不變,只是 config.finish 更可能在首跑就被填。
+- 對應同步:`skills/dev-loop/SKILL.md`「## 設定」段與核心迴圈步驟 1 的首跑敘述,把 `finish` 併入「一次問齊」清單。
 
 ## 8. `make package` 與 `make check`
 
@@ -191,8 +207,9 @@ exit 0
 ## 10. 不做(YAGNI)
 
 - 不做傳統 VS Code `.vsix` extension,也不把編排改寫成 Claude API(對照本主題最初的 B/C 方案,已否決)。
-- 不自動安裝外部相依(python3/git/openspec);只檢查提示。
-- 不引入 plugin 專屬新功能;純打包既有 dev-loop,行為不變(唯一引擎改動是 §4.3 hint 前綴字串)。
+- 不自動安裝外部相依,也不自動 `openspec init`;只檢查、提示,由使用者執行。
+- 行為改動刻意最小且明列:唯一引擎改動是 §4.3 hint 前綴字串;唯一 SKILL 行為增強是 §7.3 首跑多問一鍵 `finish`。除此之外純打包,不引入 plugin 專屬新功能。
+- 不做 `devloop doctor` 引擎子命令;首跑檢查以 SessionStart shell 腳本(§7.2)為之,夠用即可。
 - 不公開發佈到第三方 marketplace(自帶 marketplace,公開/私有/本地由使用者自行 add)。
 
 ## 11. 測試 / 驗收
@@ -200,8 +217,9 @@ exit 0
 - **引擎**:`next_hint` 前綴改裸 `devloop` 的字串斷言更新後,`tests/test_statemachine.py`、`tests/test_cli.py` 全綠;其餘測試不回歸。
 - **打包**:`make package` 產出的 `marketplace/` 結構符合 §3.2;`marketplace/plugins/dev-loop/devloop/` 與 `devloop/` 內容一致;`make check` 對 clean 樹回 in-sync、對故意改動回 exit 1。
 - **wrapper**:`bin/devloop status --file <tmp cp>` 從任意 cwd 都能 import 引擎並執行(以臨時 checkpoint 驗證)。
-- **check-deps**:三工具皆在 → 靜默 exit 0;缺任一 → stderr 提示且仍 exit 0。
-- **人工冒煙**:本機 `/plugin marketplace add ./marketplace` + install 後,`/dev-loop` 能啟動、`devloop status` 裸命令可跑、缺 openspec 時 SessionStart 有提示。
+- **check-deps**:三工具皆在且 cwd 有 `openspec/` → 靜默 exit 0;缺工具 → stderr 列出且 exit 0;工具在但專案無 `openspec/` → 印「未初始化 OpenSpec」提示且 exit 0;openspec CLI 不存在時**不**重複印專案未 init(僅印缺 openspec)。
+- **首跑 finish 問答**:屬 SKILL prose 改動,以人工冒煙驗——空 config 首跑時問答涵蓋 superpowers/auto_approve/**finish** 三鍵並寫回;`config.finish` 已設時不再問。
+- **人工冒煙**:本機 `/plugin marketplace add ./marketplace` + install 後,`/dev-loop` 能啟動、`devloop status` 裸命令可跑、缺 openspec 或專案未 init 時 SessionStart 有對應提示、首跑問答含 finish。
 
 ## 12. 風險 / 待定
 
