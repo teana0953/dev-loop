@@ -54,7 +54,7 @@ def test_status_second_line_is_next_hint_for_gate(tmp_path, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert "phase=gate" in lines[0]
     assert lines[1].startswith("next: ")
-    assert "devloop.cli gate" in lines[1]
+    assert "devloop gate" in lines[1]
 
 
 def test_status_next_hint_prioritizes_pending_units(tmp_path, capsys):
@@ -1530,7 +1530,7 @@ def test_status_gate_hint_is_fully_executable_with_config_cmds(tmp_path, capsys)
         json.dumps({"gate_cmds": ["true"]}), encoding="utf-8")
     main(["status", "--file", str(cp_path)])
     lines = capsys.readouterr().out.splitlines()
-    assert lines[1] == "next: python3 -m devloop.cli gate --file %s" % cp_path
+    assert lines[1] == "next: devloop gate --file %s" % cp_path
     assert "<test-cmd>" not in lines[1]
 
 

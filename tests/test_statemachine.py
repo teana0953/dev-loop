@@ -168,23 +168,23 @@ def test_next_hint_covers_every_phase(phase):
 def test_next_hint_gate_gives_command_skeleton():
     hint = next_hint("gate", "/x/.devloop/checkpoint.json")
     assert hint.startswith("next: ")
-    assert "devloop.cli gate" in hint
+    assert "devloop gate" in hint
     assert "/x/.devloop/checkpoint.json" in hint
 
 
 def test_next_hint_qa_gives_command_skeleton():
     hint = next_hint("qa", "/x/cp.json")
-    assert "devloop.cli qa" in hint
+    assert "devloop qa" in hint
 
 
 def test_next_hint_review_gives_command_skeleton():
     hint = next_hint("review", "/x/cp.json")
-    assert "devloop.cli review" in hint
+    assert "devloop review" in hint
 
 
 def test_next_hint_merge_gives_finish_skeleton():
     hint = next_hint("merge", "/x/cp.json")
-    assert "devloop.cli finish" in hint
+    assert "devloop finish" in hint
 
 
 def test_next_hint_judgment_phases_use_dispatch():
@@ -231,12 +231,12 @@ def test_next_hint_review_with_pending_legs_prioritized():
 def test_next_hint_review_with_all_legs_collected_gives_review_command():
     legs = [{"kind": "code", "status": "collected", "report": "c.json"}]
     hint = next_hint("review", "/x/cp.json", review_legs=legs)
-    assert "devloop.cli review" in hint
+    assert "devloop review" in hint
 
 
 def test_next_hint_gate_with_config_cmds_gives_full_command():
     hint = next_hint("gate", "cp.json", gate_cmds=["pytest -q"])
-    assert hint == "next: python3 -m devloop.cli gate --file cp.json"
+    assert hint == "next: devloop gate --file cp.json"
 
 
 def test_next_hint_gate_without_config_cmds_keeps_skeleton():

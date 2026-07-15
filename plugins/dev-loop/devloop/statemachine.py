@@ -48,15 +48,15 @@ class InvalidTransition(Exception):
 # 判斷型步驟給 dispatch 說明、終態明確收束。
 _DETERMINISTIC_HINTS = {
     "proposal_review":
-        lambda f: "next: python3 -m devloop.cli proposal-review --file %s --report <pr.json>" % f,
+        lambda f: "next: devloop proposal-review --file %s --report <pr.json>" % f,
     "gate":
-        lambda f: 'next: python3 -m devloop.cli gate --file %s --cmd "<test-cmd>" [--cmd "<lint-cmd>"]' % f,
+        lambda f: 'next: devloop gate --file %s --cmd "<test-cmd>" [--cmd "<lint-cmd>"]' % f,
     "qa":
-        lambda f: "next: python3 -m devloop.cli qa --file %s --report <qa.json>" % f,
+        lambda f: "next: devloop qa --file %s --report <qa.json>" % f,
     "review":
-        lambda f: "next: python3 -m devloop.cli review --file %s --from-legs" % f,
+        lambda f: "next: devloop review --file %s --from-legs" % f,
     "merge":
-        lambda f: ("next: python3 -m devloop.cli finish --file %s "
+        lambda f: ("next: devloop finish --file %s "
                     "--config <config.json> --meta <meta.json> --followup <followup.md>") % f,
 }
 
@@ -84,20 +84,20 @@ def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=No
     finish_mode 有值時(checkpoint 已記錄 merge/pr),teardown hint 給完整
     可執行命令;無值時給 `<merge|pr>` 骨架待人工/引擎補上。"""
     if phase == "gate" and gate_cmds:
-        return "next: python3 -m devloop.cli gate --file %s" % checkpoint_path
+        return "next: devloop gate --file %s" % checkpoint_path
     if phase == "teardown":
         mode = finish_mode or "<merge|pr>"
-        return ("next: python3 -m devloop.cli teardown --file %s --repo . --mode %s"
+        return ("next: devloop teardown --file %s --repo . --mode %s"
                 % (checkpoint_path, mode))
     if phase in ("apply", "fix") and units:
         pending = [u["id"] for u in units if u.get("status") in ("pending", "in_progress")]
         if pending:
-            return ("next: units pending: %s -> python3 -m devloop.cli units-status --file %s"
+            return ("next: units pending: %s -> devloop units-status --file %s"
                     % (",".join(pending), checkpoint_path))
     if phase == "review" and review_legs:
         pending_legs = [l["kind"] for l in review_legs if l.get("status") != "collected"]
         if pending_legs:
-            return ("next: legs pending: %s -> python3 -m devloop.cli leg-done --file %s "
+            return ("next: legs pending: %s -> devloop leg-done --file %s "
                      "--kind <kind> --report <report.json>"
                      % (",".join(pending_legs), checkpoint_path))
     if phase in _TERMINAL_HINTS:
