@@ -15,6 +15,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 變更清單需要完整歷史與既有 tags
 
       - name: Read plugin version
         id: v
@@ -31,14 +33,25 @@ jobs:
             echo "tag/release $tag already exists; nothing to do"
             exit 0
           fi
-          # --generate-notes 自動產生與上一個 tag 之間的變更清單,接在 --notes 內容之後
+          # 變更清單從 commit log 生成(repo 走直接 commit 不開 PR,
+          # gh 的 --generate-notes 以 PR 為單位、在此只會產出 compare 連結,故不用)。
+          prev=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            echo "dev-loop plugin $tag"
+            echo
+            echo "安裝:"
+            echo "    /plugin marketplace add teana0953/dev-loop#$tag"
+            echo "    /plugin install dev-loop@dev-loop"
+            echo
+            echo "或裝最新:/plugin marketplace add teana0953/dev-loop"
+            echo
+            echo "## 變更"
+            git log --oneline --no-merges ${prev:+$prev..}HEAD | sed 's/^/- /'
+            if [ -n "$prev" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${tag}"
+            fi
+          } > /tmp/release-notes.md
           gh release create "$tag" \
             --title "$tag" \
-            --generate-notes \
-            --notes "dev-loop plugin $tag
-
-          安裝:
-              /plugin marketplace add teana0953/dev-loop#$tag
-              /plugin install dev-loop@dev-loop
-
-          或裝最新:/plugin marketplace add teana0953/dev-loop"
+            --notes-file /tmp/release-notes.md
