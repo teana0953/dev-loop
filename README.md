@@ -63,7 +63,7 @@
 
 裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
 
-    /plugin marketplace add teana0953/dev-loop#v0.1.0
+    /plugin marketplace add teana0953/dev-loop#v0.2.0
 
 本 repo 根即 marketplace,plugin 正本在 `plugins/dev-loop/`;引擎、skill、command、wrapper 皆在其下,無 build、無安裝副本。也可用本地路徑或私有 git URL 直接 `add`。
 
