@@ -170,6 +170,6 @@ devloop arm-local --file /your/project/.devloop/checkpoint.json
 make test       # 全套測試(= python3 -m pytest -q;stdlib-only + pytest)
 ```
 
-需求:Python 3.9+、`openspec` CLI、`pytest`(僅測試用)。
+需求:Python 3.10+、`openspec` CLI、`pytest`(僅測試用)。lint 用 `ruff check plugins/dev-loop/devloop tests`(CI 亦跑)。
 
-**CI/CD**(`.github/workflows/`):`ci.yml` 在 push/PR 跑 pytest(Python 3.9 / 3.11 / 3.13 矩陣);`release.yml` 在 `plugins/dev-loop/.claude-plugin/plugin.json` 的 `version` bump 進 `main` 時,自動打 tag `vX.Y.Z` + 建 GitHub Release(冪等)。**發版 = 改 plugin.json 的 version 並推 main。**
+**CI/CD**(`.github/workflows/`):`ci.yml` 在 push/PR 跑 ruff lint + pytest(Python 3.10 / 3.12 / 3.13 矩陣);`release.yml` 在 `plugins/dev-loop/.claude-plugin/plugin.json` 的 `version` bump 進 `main` 時,自動打 tag `vX.Y.Z` + 建 GitHub Release(冪等)。**發版 = 改 plugin.json 的 version 並推 main。**

@@ -1,4 +1,3 @@
-import json
 
 import devloop.cli as cli
 from devloop.checkpoint import Checkpoint

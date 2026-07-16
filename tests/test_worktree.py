@@ -1,6 +1,5 @@
 # tests/test_worktree.py
 import subprocess
-from pathlib import Path
 
 import pytest
 

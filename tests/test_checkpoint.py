@@ -64,7 +64,6 @@ def test_save_creates_missing_parent_dirs(tmp_path):
 
 
 import json
-from devloop.checkpoint import Checkpoint
 
 
 def test_units_and_legs_default_empty():

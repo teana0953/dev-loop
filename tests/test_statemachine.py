@@ -244,7 +244,6 @@ def test_next_hint_gate_without_config_cmds_keeps_skeleton():
 
 
 def test_teardown_done_to_done():
-    from devloop.statemachine import TEARDOWN_DONE
     assert transition("teardown", 2, TEARDOWN_DONE) == ("done", 2)
 
 

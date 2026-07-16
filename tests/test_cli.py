@@ -1,6 +1,5 @@
 import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -860,6 +859,7 @@ def test_units_status_none_pending(tmp_path):
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = main(["units-status", "--file", str(cp_path)])
+    assert rc == 0
     assert "pending: -" in buf.getvalue()
 
 
