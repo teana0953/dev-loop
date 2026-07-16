@@ -54,10 +54,10 @@ model: claude-opus-4-8
 ## B. 新 loop
 
 ### B1. Brainstorm(✋ 人工關卡)
-呼叫 superpowers:brainstorming skill,針對 `$ARGUMENTS` 產出設計文件。**等使用者批准設計**後才繼續。
+呼叫 superpowers:brainstorming skill,針對 `$ARGUMENTS` 產出設計文件,草稿寫 `.devloop/design-draft.md`(不要在 `docs/` 另存)。**等使用者批准設計**後才繼續。
 
 ### B2. Propose(OpenSpec)
-依批准的設計建立一個**切小**的 OpenSpec change(符合 trunk-based 小而頻繁)。記下 `change-id` 與要用的短命分支名 `loop/<change-id>`。先 `git checkout -b loop/<change-id>`。
+依批准的設計建立一個**切小**的 OpenSpec change(符合 trunk-based 小而頻繁),把設計文件移入 `openspec/changes/<change-id>/design.md` 當唯一正本(移入後刪草稿),實作規劃直接寫 change 的 `tasks.md`。記下 `change-id` 與要用的短命分支名 `loop/<change-id>`。先 `git checkout -b loop/<change-id>`。
 
 ### B3. 啟動引擎 + 驗證提案(✋ 人工關卡)
 - `devloop start --file $CP --change-id <change-id> --branch loop/<change-id> --resume-exec "claude -p '/dev-loop resume'"`(`start` 寫入 checkpoint 後引擎自動 arm 續跑 watcher,見「規則」)。

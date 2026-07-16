@@ -25,10 +25,10 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## 流程
 
-1. **Brainstorm(Opus)**:產出設計文件——`superpowers=true` 用 `superpowers:brainstorming`,false 直接與使用者對話探索需求後撰寫。`auto_approve=false` → ✋ 等使用者批准;true → 視為批准,直接進步驟 2。
-2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名)。
+1. **Brainstorm(Opus)**:產出設計文件——`superpowers=true` 用 `superpowers:brainstorming`,false 直接與使用者對話探索需求後撰寫。草稿寫 `.devloop/design-draft.md`(此時 change-id 未定;**不要**在 `docs/` 另存獨立設計文件)。`auto_approve=false` → ✋ 等使用者批准;true → 視為批准,直接進步驟 2。
+2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名),並把批准的設計文件移入 `openspec/changes/<id>/design.md` 當唯一正本(移入後刪草稿);實作規劃直接寫 change 的 `tasks.md`,不另寫獨立 plan 文件。過程 artifact(設計/計畫/delta spec)自此都活在 change 目錄,收尾 archive 時隨 change 整包進 `openspec/changes/archive/`,設計史集中一處。
 3. **啟動引擎 + 驗證提案**:`devloop start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `devloop validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。若 start 報 `checkpoint exists`(exit 2):既有 loop 尚未完結——先跑 `status` 判斷該 resume 還是升級給使用者,**不要**逕自 `--force` 覆蓋。
-4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、設計文件、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
+4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、change 的 `design.md`、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
    `devloop proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;`auto_approve=false` → ✋ 此時等使用者批准提案;true → 視為批准,直接進步驟 5。
    - blocking(proposal)且未超過 `--max-propose`(預設 3):`propose_attempts` +1,phase=propose,自動重新 propose;propose 完成後呼叫 `devloop event --file .devloop/checkpoint.json --event propose_done` 轉回 proposal_review,再跑本步驟的 proposal-review。
