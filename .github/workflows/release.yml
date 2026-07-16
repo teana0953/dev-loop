@@ -1,0 +1,42 @@
+name: Release
+
+# plugin.json 的 version bump 進 main 時,自動打 tag + 建 GitHub Release,
+# 讓使用者能以 /plugin marketplace add teana0953/dev-loop#vX.Y.Z pin 版本。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/dev-loop/.claude-plugin/plugin.json"
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read plugin version
+        id: v
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('plugins/dev-loop/.claude-plugin/plugin.json'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag + release if version is new
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ steps.v.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1 || gh release view "$tag" >/dev/null 2>&1; then
+            echo "tag/release $tag already exists; nothing to do"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "dev-loop plugin $tag
+
+          安裝:
+              /plugin marketplace add teana0953/dev-loop#$tag
+              /plugin install dev-loop@dev-loop
+
+          或裝最新:/plugin marketplace add teana0953/dev-loop"
