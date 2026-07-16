@@ -12,8 +12,27 @@ model: claude-opus-4-8
 
 ## 分流
 
-- 若 `$ARGUMENTS` 為 `resume`(或空且 `$CP` 已存在)→ 走 **A. 續跑**。
+- 若 `$ARGUMENTS` 為空且 `$CP` **不存在** → 走 **C. 入門說明**(印導引,不要起空 loop)。
+- 若 `$ARGUMENTS` 為 `resume`(或為空且 `$CP` 已存在)→ 走 **A. 續跑**。
 - 否則把 `$ARGUMENTS` 當作功能需求 → 走 **B. 新 loop**。
+
+---
+
+## C. 入門說明(無參數且無進行中 loop)
+
+**不要啟動 loop。** 直接對使用者輸出這段導引(依實際專案狀態微調用語):
+
+- **這是什麼**:dev-loop 用固定流程(brainstorm→OpenSpec→TDD→review→自動 merge)幫你把一個功能從想法做到併回 trunk,只在關鍵點需要你點頭。
+- **怎麼起**:`/dev-loop <你要的功能>`,例如 `/dev-loop 幫我加一個匯出 CSV 的按鈕`。
+- **順手檢查前置**(缺什麼就給對應指令,別自動幫他裝/init):
+  - `python3` / `git` / `openspec` 都在嗎?(缺 openspec:`npm i -g openspec`)
+  - 當前是 git repo 嗎?(否:`git init`)
+  - 當前專案 `openspec init` 過了嗎(有沒有 `openspec/` 目錄)?(否:`openspec init --tools claude`)
+- **只會停在三處 ✋**:批准設計、批准提案、以及卡住時的 escalated——其餘自動(apply→gate→QA→review→fix→merge)。
+- **中斷續跑**:`/dev-loop resume`(或什麼都不打,有進行中的 loop 會自動接)。
+- **偏好**:首跑會問 superpowers / auto_approve / finish 並寫進 `.devloop/config.json`;想全自動就 `auto_approve: true` + `finish: merge`。
+
+最後問使用者:**要現在描述一個功能起 loop 嗎?**
 
 ---
 

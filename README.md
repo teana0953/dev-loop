@@ -6,6 +6,44 @@
 
 **流程**:brainstorm(Opus,可選 superpowers 驅動)→ ✋批准設計 → OpenSpec propose → proposal-review(Opus,自動修到乾淨)→ ✋批准提案 → apply + TDD(Sonnet,可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask)。兩個 ✋ 批准關卡可用 `auto_approve` 關閉(escalated 安全閥恆停);token 用罄則由 detached watcher 兜底自動續跑。
 
+## Quickstart(第一次用)
+
+1. **裝 plugin**(在 Claude Code 裡):
+
+   ```
+   /plugin marketplace add teana0953/dev-loop
+   /plugin install dev-loop@dev-loop
+   ```
+
+2. **準備專案**(每個新專案一次):
+
+   ```bash
+   cd /your/project
+   git init                       # 若還不是 git repo
+   openspec init --tools claude   # 初始化 OpenSpec
+   ```
+
+3. **起一條 loop**:在該專案的 Claude Code 裡打
+
+   ```
+   /dev-loop 幫我加一個 X 功能
+   ```
+
+   (什麼都不打的 `/dev-loop` 會印一段入門說明,不會亂起 loop。)
+
+4. **只會停在三個 ✋ 人工關卡**,其餘全自動:
+   - **批准設計** — brainstorm 產出設計文件,你看過點頭
+   - **批准提案** — 轉成 OpenSpec change,你看過點頭
+   - **escalated**(只在卡住時) — 重試耗盡或設計層問題,交你裁決
+
+   中間 apply(TDD)→ gate → QA → review → fix 全自動;跑完依 `finish` 自動 merge 回 trunk。
+
+5. **中斷了就續跑**:`/dev-loop resume`(或什麼都不打,有進行中的 loop 會自動接);token 用罄時 watcher 也會自動兜底續跑。
+
+首跑會一次問你三個偏好(要不要用 superpowers、批准關卡要不要自動、收尾 merge/pr/ask),寫進 `.devloop/config.json`,之後不再問。想全自動就設 `auto_approve: true` + `finish: merge`,只在 escalated 時找你。
+
+> 以下是完整參考(安裝細節、config、引擎 CLI)。
+
 > 設計與三份實作計畫見 `docs/superpowers/specs/2026-06-30-dev-loop-v2-design.md` 與 `docs/superpowers/plans/2026-06-30-dev-loop-v2-*.md`。
 
 確定性的部分(狀態機、checkpoint、gate、review 分級、resume 排程、OpenSpec 封裝)由一個 stdlib-only 的 Python 引擎負責;判斷與換 model 的部分由 `dev-loop` skill 編排。
