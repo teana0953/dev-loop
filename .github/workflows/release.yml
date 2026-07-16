@@ -31,8 +31,10 @@ jobs:
             echo "tag/release $tag already exists; nothing to do"
             exit 0
           fi
+          # --generate-notes 自動產生與上一個 tag 之間的變更清單,接在 --notes 內容之後
           gh release create "$tag" \
             --title "$tag" \
+            --generate-notes \
             --notes "dev-loop plugin $tag
 
           安裝:
