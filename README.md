@@ -51,15 +51,11 @@
 - 設計規格:[docs/superpowers/specs/2026-06-18-dev-loop-design.md](docs/superpowers/specs/2026-06-18-dev-loop-design.md)
 - 實作計畫:[docs/superpowers/plans/2026-06-18-dev-loop-engine.md](docs/superpowers/plans/2026-06-18-dev-loop-engine.md)
 
-## 安裝
+## 安裝(參考)
 
-前置:`python3`、`git`、`openspec`(`npm i -g openspec`)。
+安裝與每專案設定的步驟見上方 Quickstart;本節只補細節。
 
-在 Claude Code 裡:
-
-    /plugin marketplace add teana0953/dev-loop
-    /plugin install dev-loop@dev-loop
-    /dev-loop        # 首跑會問 superpowers/auto_approve/finish;SessionStart 檢查前置與 openspec init
+前置:`python3`(3.10+)、`git`、`openspec`(`npm i -g openspec`)。
 
 裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
 
@@ -67,15 +63,9 @@
 
 本 repo 根即 marketplace,plugin 正本在 `plugins/dev-loop/`;引擎、skill、command、wrapper 皆在其下,無 build、無安裝副本。也可用本地路徑或私有 git URL 直接 `add`。
 
-**每個新專案一次性設定:**
+## 設定(.devloop/config.json)
 
-```bash
-cd /your/project
-git init                       # 若還不是 git repo(trunk-based)
-openspec init --tools claude   # 初始化 OpenSpec
-```
-
-可選:在 `.devloop/config.json` 做專案級設定(`superpowers` / `auto_approve` 未設時會在第一次啟動 loop 問一次並寫回;續跑固定由本機 watcher 兜底):
+可選的專案級設定(`superpowers` / `auto_approve` / `finish` 未設時會在第一次啟動 loop 問一次並寫回;續跑固定由本機 watcher 兜底):
 
 ```json
 {
@@ -92,13 +82,7 @@ openspec init --tools claude   # 初始化 OpenSpec
 - `auto_approve`:布林,預設 false。true 時「批准設計」「批准提案」兩個人工關卡自動通過;**escalated 安全閥恆停,不受此鍵影響**。只認 JSON `true`,錯值朝「要人工」方向保守退化。未設 → 第一次啟動時問使用者一次並寫回。
 - `auto_arm`:布林,預設 true。引擎在每個寫 checkpoint 的子命令之後自動確保 watcher 在位;設 false 關閉此自動行為(手動 `arm-local` 不受影響),一般不需要動這個鍵。
 
-**之後**在該專案的 Claude Code session 直接呼叫 skill:
-
-> 「用 dev-loop 幫我做 X 功能」 / 「dev-loop resume」(續跑)
-
-Claude 會依流程跑:brainstorm ✋ → propose → proposal-review(自動修到乾淨)✋ → apply+TDD(可平行)→ hard gate → QA → review(code‖UI-UX legs)→ fix↺ → 依 `finish` 收尾(merge / pr / ask)。兩個 ✋ 依 `auto_approve` 決定停或不停。checkpoint 落在該專案的 `.devloop/`,各專案狀態獨立。
-
-**人工關卡**:批准設計、批准提案(proposal-review 判定 clean 後)——這兩處可用 `auto_approve: true` 關閉;超過最大輪數時的升級(escalated)**恆停**,是不可關閉的安全閥;若 `finish` 未設或為 `ask`,收尾時多一處選 merge/pr。其餘自動。搭配 `auto_approve: true` + `finish: merge` 可跑全自動 loop,只在 escalated 時找人。
+checkpoint 落在各專案的 `.devloop/`,狀態彼此獨立。人工關卡有哪些、以及 `auto_approve: true` + `finish: merge` 的全自動組合,見 Quickstart 第 4 點與其後說明。
 
 ## 引擎 CLI
 
