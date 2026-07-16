@@ -1,5 +1,7 @@
 # dev-loop
 
+[![CI](https://github.com/teana0953/dev-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/teana0953/dev-loop/actions/workflows/ci.yml)
+
 把「用 agent 開發」的固定流程形式化成一個可重複、可中斷續跑、只在關鍵點需人工的 loop。
 
 **流程**:brainstorm(Opus,可選 superpowers 驅動)→ ✋批准設計 → OpenSpec propose → proposal-review(Opus,自動修到乾淨)→ ✋批准提案 → apply + TDD(Sonnet,可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask)。兩個 ✋ 批准關卡可用 `auto_approve` 關閉(escalated 安全閥恆停);token 用罄則由 detached watcher 兜底自動續跑。
@@ -15,11 +17,17 @@
 
 前置:`python3`、`git`、`openspec`(`npm i -g openspec`)。
 
-    /plugin marketplace add <本 repo 的 git URL 或本地路徑>
+在 Claude Code 裡:
+
+    /plugin marketplace add teana0953/dev-loop
     /plugin install dev-loop@dev-loop
     /dev-loop        # 首跑會問 superpowers/auto_approve/finish;SessionStart 檢查前置與 openspec init
 
-本 repo 根即 marketplace,plugin 正本在 `plugins/dev-loop/`;引擎、skill、command、wrapper 皆在其下,無 build、無安裝副本。
+裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
+
+    /plugin marketplace add teana0953/dev-loop#v0.1.0
+
+本 repo 根即 marketplace,plugin 正本在 `plugins/dev-loop/`;引擎、skill、command、wrapper 皆在其下,無 build、無安裝副本。也可用本地路徑或私有 git URL 直接 `add`。
 
 **每個新專案一次性設定:**
 
@@ -125,3 +133,5 @@ make test       # 全套測試(= python3 -m pytest -q;stdlib-only + pytest)
 ```
 
 需求:Python 3.9+、`openspec` CLI、`pytest`(僅測試用)。
+
+**CI/CD**(`.github/workflows/`):`ci.yml` 在 push/PR 跑 pytest(Python 3.9 / 3.11 / 3.13 矩陣);`release.yml` 在 `plugins/dev-loop/.claude-plugin/plugin.json` 的 `version` bump 進 `main` 時,自動打 tag `vX.Y.Z` + 建 GitHub Release(冪等)。**發版 = 改 plugin.json 的 version 並推 main。**
