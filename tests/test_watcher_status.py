@@ -1,7 +1,7 @@
 import json
 import os
 
-import devloop.cli as cli
+import devloop.watcher as watcher
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
 
@@ -31,7 +31,7 @@ def test_watcher_status_dead_needing_rearm_exits_1(tmp_path, monkeypatch, capsys
     f = tmp_path / "cp.json"
     Checkpoint(phase="gate", change_id="c", branch="b", resume_exec="true").save(f)
     (tmp_path / "watcher.pid").write_text("12345")
-    monkeypatch.setattr(cli, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(watcher, "_pid_alive", lambda pid: False)
     code = main(["watcher-status", "--file", str(f)])
     out = capsys.readouterr().out
     assert code == 1
@@ -118,7 +118,7 @@ def test_ensure_armed_passes_log_path_to_spawn(tmp_path, monkeypatch):
         captured["log_path"] = log_path
         return 4242
 
-    monkeypatch.setattr(cli, "_spawn_watcher", fake_spawn)
-    status, _ = cli.ensure_armed(str(f))
+    monkeypatch.setattr(watcher, "_spawn_watcher", fake_spawn)
+    status, _ = watcher.ensure_armed(str(f))
     assert status == "armed"
     assert str(captured["log_path"]) == str(tmp_path / "watcher-log.jsonl")

@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shlex
-import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from devloop import units_cli, watcher
 from devloop.adapter import DEFAULT_HEARTBEAT, run_watcher
-from devloop.changemeta import is_serial, load_change_meta
+from devloop.changemeta import load_change_meta
 from devloop.checkpoint import Checkpoint
 from devloop.config import load_config, resolve_finish, validate_gate_cmds
 from devloop.finish import render_followup, write_followup
@@ -40,23 +39,6 @@ from devloop.statemachine import (
 from devloop.teardown import (
     delete_merged_branch, disarm_watcher, prune_orphan_worktrees, sweep_change_meta,
 )
-from devloop.units import build_units, mark, pending_units
-from devloop.worktree import add_worktree, merge_branch, remove_worktree, list_worktree_paths, worktree_exists
-
-
-def _ensure_armed_after_save(cp, args):
-    """checkpoint save 後自動確保 watcher 在位。靜默,失敗僅 stderr 警告。"""
-    if not cp.resume_exec:
-        return
-    if cp.phase == "done":
-        return  # 終態不再需要 watcher(teardown 已 disarm,勿重新拉起)
-    config = load_config(Path(args.file).parent / "config.json")
-    if not config.auto_arm:
-        return
-    try:
-        ensure_armed(args.file)
-    except Exception as exc:
-        print("warning: auto-arm failed: %s" % exc, file=sys.stderr)
 
 
 def _save_with_history(cp, args, event, from_phase):
@@ -67,7 +49,7 @@ def _save_with_history(cp, args, event, from_phase):
         append_history(args.file, event, from_phase, cp.phase, cp.iteration)
     except Exception as exc:
         print("warning: history append failed: %s" % exc, file=sys.stderr)
-    _ensure_armed_after_save(cp, args)
+    watcher._ensure_armed_after_save(cp, args)
 
 
 def _cmd_start(args):
@@ -121,7 +103,7 @@ def _warn_if_watcher_missing(cp, checkpoint_path):
     """非終態且有續跑命令時,watcher 該在而不在 → stderr 警告(stdout 契約不變)。"""
     if cp.phase == "done" or not cp.resume_exec:
         return
-    state, _pid = _watcher_state(checkpoint_path)
+    state, _pid = watcher._watcher_state(checkpoint_path)
     if state != "running":
         print(
             "warning: watcher not running; re-arm: "
@@ -247,7 +229,7 @@ def _cmd_legs_init(args):
     kinds = [k for k in args.kinds.split(",") if k]
     cp.review_legs = [{"kind": k, "status": "pending", "report": ""} for k in kinds]
     cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
+    watcher._ensure_armed_after_save(cp, args)
     print("legs-init: %d" % len(cp.review_legs))
     return 0
 
@@ -259,82 +241,16 @@ def _cmd_leg_done(args):
             leg["status"] = "collected"
             leg["report"] = args.report
             cp.save(args.file)
-            _ensure_armed_after_save(cp, args)
+            watcher._ensure_armed_after_save(cp, args)
             print("leg-done: %s" % args.kind)
             return 0
     print("error: no leg %r" % args.kind, file=sys.stderr)
     return 2
 
 
-def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False  # ESRCH:無此行程 → 死
-    except PermissionError:
-        return True  # EPERM:行程存在但屬他人 → 存活
-    except OSError:
-        return False
-    return True
-
-
-def _spawn_watcher(exec_command, heartbeat, log_path=None):
-    """spawn 一個 detached 行程跑 watch 子命令,回傳其 PID。"""
-    argv = [
-        sys.executable, "-m", "devloop.cli", "watch",
-        "--exec", shlex.join(exec_command),
-        "--heartbeat", str(heartbeat),
-    ]
-    if log_path:
-        argv += ["--log", str(log_path)]
-    env = os.environ.copy()
-    pythonpath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = pythonpath + (os.pathsep + existing if existing else "")
-    proc = subprocess.Popen(argv, start_new_session=True, env=env)
-    return proc.pid
-
-
-def _watcher_state(checkpoint_path):
-    """讀 watcher.pid 判斷 watcher 狀態。回傳 (state, pid):
-    "running"(活著)/ "dead"(pid 檔在但行程死)/ "absent"(無 pid 檔或內容非法)。"""
-    pid_path = Path(checkpoint_path).parent / "watcher.pid"
-    if not pid_path.exists():
-        return ("absent", None)
-    try:
-        pid = int(pid_path.read_text().strip())
-    except ValueError:
-        return ("absent", None)
-    return ("running", pid) if _pid_alive(pid) else ("dead", pid)
-
-
-def _watcher_log_path(checkpoint_path) -> Path:
-    return Path(checkpoint_path).parent / "watcher-log.jsonl"
-
-
-def ensure_armed(checkpoint_path, heartbeat=DEFAULT_HEARTBEAT, exec_override=None):
-    """idempotent 確保 watcher 在位。回傳 (status, info),不印字。
-
-    status ∈ "armed"(剛 spawn,info=pid)/ "already"(既存活,info=pid)/
-    "skipped"(無 resume 命令,info=None)。
-    """
-    cp = Checkpoint.load(checkpoint_path)
-    exec_str = exec_override or cp.resume_exec
-    if not exec_str:
-        return ("skipped", None)
-    state, pid = _watcher_state(checkpoint_path)
-    if state == "running":
-        return ("already", pid)
-    pid = _spawn_watcher(
-        shlex.split(exec_str), heartbeat, log_path=_watcher_log_path(checkpoint_path))
-    pid_path = Path(checkpoint_path).parent / "watcher.pid"
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    pid_path.write_text(str(pid))
-    return ("armed", pid)
-
-
 def _cmd_arm_local(args):
-    status, info = ensure_armed(args.file, heartbeat=args.heartbeat, exec_override=args.exec)
+    status, info = watcher.ensure_armed(
+        args.file, heartbeat=args.heartbeat, exec_override=args.exec)
     if status == "skipped":
         print(
             "error: no resume command (checkpoint.resume_exec empty and no --exec)",
@@ -356,7 +272,7 @@ def _cmd_watcher_status(args):
     """watcher 排障一眼看:行程狀態、續跑命令、最近一次嘗試。
     exit 0 = 在位或不需要;exit 1 = 該在而不在(建議 arm-local)。"""
     cp = Checkpoint.load(args.file)
-    state, pid = _watcher_state(args.file)
+    state, pid = watcher._watcher_state(args.file)
     if state == "running":
         print("watcher: running (pid=%d)" % pid)
     elif state == "dead":
@@ -364,7 +280,7 @@ def _cmd_watcher_status(args):
     else:
         print("watcher: not armed")
     print("resume_exec: %s" % (cp.resume_exec or "(none)"))
-    last = _last_watcher_attempt(args.file)
+    last = watcher._last_watcher_attempt(args.file)
     if last is None:
         print("last attempt: (none)")
     else:
@@ -379,23 +295,6 @@ def _cmd_watcher_status(args):
         print("hint: devloop arm-local --file %s" % args.file)
         return 1
     return 0
-
-
-def _last_watcher_attempt(checkpoint_path):
-    """讀 watcher log 最後一筆;無檔/空檔/壞行回 None(排障工具自身不炸)。"""
-    log = _watcher_log_path(checkpoint_path)
-    if not log.exists():
-        return None
-    last = None
-    for line in log.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            last = json.loads(line)
-        except ValueError:
-            continue
-    return last
 
 
 def _cmd_validate_change(args):
@@ -467,134 +366,6 @@ def _cmd_finish(args):
         if body:
             print("--- PR body follow-up ---")
             print(body)
-    return 0
-
-
-def _cmd_units_init(args):
-    cp = Checkpoint.load(args.file)
-    meta = load_change_meta(args.meta)
-    if is_serial(meta):
-        cp.units = []
-        cp.save(args.file)
-        _ensure_armed_after_save(cp, args)
-        print("units-init: serial")
-        return 0
-    units = build_units(meta.parallel_groups, cp.branch, args.wt_root)
-    base = cp.branch if _branch_exists(args.repo, cp.branch) else "HEAD"
-    for u in units:
-        if not worktree_exists(args.repo, u["worktree"]):
-            add_worktree(args.repo, u["worktree"], u["branch"], base)
-    cp.units = units
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    print("units-init: %d units" % len(units))
-    return 0
-
-
-def _branch_exists(repo, branch):
-    r = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", branch],
-        capture_output=True, text=True,
-    )
-    return r.returncode == 0
-
-
-def _cmd_unit_done(args):
-    cp = Checkpoint.load(args.file)
-    try:
-        mark(cp.units, args.id, "done")
-    except KeyError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    print("unit-done: %s" % args.id)
-    return 0
-
-
-def _cmd_unit_claim(args):
-    cp = Checkpoint.load(args.file)
-    try:
-        mark(cp.units, args.id, "in_progress")
-    except KeyError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    print("unit-claim: %s" % args.id)
-    return 0
-
-
-def _cmd_units_merge(args):
-    cp = Checkpoint.load(args.file)
-    co = subprocess.run(["git", "-C", str(args.repo), "checkout", cp.branch],
-                        capture_output=True, text=True)
-    if co.returncode != 0:
-        print("error: git checkout %s failed: %s" % (cp.branch, co.stderr.strip()),
-              file=sys.stderr)
-        return 2
-    conflicts = []
-    for u in cp.units:
-        if u["status"] != "done":
-            continue
-        res = merge_branch(args.repo, u["branch"])
-        u["status"] = "merged" if res.ok else "conflict"
-        if not res.ok:
-            conflicts.append(u["id"])
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    if conflicts:
-        print("units-merge: conflict in %s" % ", ".join(conflicts))
-        return 1
-    print("units-merge: all merged")
-    return 0
-
-
-def _cmd_units_cleanup(args):
-    cp = Checkpoint.load(args.file)
-    wt_root = str(Path(args.wt_root).resolve()) + os.sep
-    removed = 0
-    known = set()
-    for u in cp.units:
-        known.add(str(Path(u["worktree"]).resolve()))
-        if u["status"] == "merged":
-            remove_worktree(args.repo, u["worktree"], u["branch"])
-            removed += 1
-    for p in list_worktree_paths(args.repo):
-        if p not in known and p.startswith(wt_root):
-            subprocess.run(["git", "-C", str(args.repo), "worktree", "remove", "--force", p],
-                           capture_output=True, text=True)
-            removed += 1
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    print("units-cleanup: removed %d" % removed)
-    return 0
-
-
-def _cmd_unit_resolve(args):
-    cp = Checkpoint.load(args.file)
-    target = None
-    for u in cp.units:
-        if u["id"] == args.id:
-            target = u
-            break
-    if target is None:
-        print("error: no unit %r" % args.id, file=sys.stderr)
-        return 2
-    remove_worktree(args.repo, target["worktree"], target["branch"])
-    target["status"] = "merged"
-    cp.save(args.file)
-    _ensure_armed_after_save(cp, args)
-    print("unit-resolve: %s merged" % args.id)
-    return 0
-
-
-def _cmd_units_status(args):
-    cp = Checkpoint.load(args.file)
-    for u in cp.units:
-        print("%s %s" % (u["id"], u["status"]))
-    pend = [u["id"] for u in pending_units(cp.units)]
-    print("pending: %s" % (",".join(pend) if pend else "-"))
     return 0
 
 
@@ -713,38 +484,38 @@ def build_parser():
     p_ui.add_argument("--repo", required=True)
     p_ui.add_argument("--meta", required=True)
     p_ui.add_argument("--wt-root", dest="wt_root", required=True)
-    p_ui.set_defaults(func=_cmd_units_init)
+    p_ui.set_defaults(func=units_cli._cmd_units_init)
 
     p_ud = sub.add_parser("unit-done")
     p_ud.add_argument("--file", required=True)
     p_ud.add_argument("--id", required=True)
-    p_ud.set_defaults(func=_cmd_unit_done)
+    p_ud.set_defaults(func=units_cli._cmd_unit_done)
 
     p_ucl = sub.add_parser("unit-claim")
     p_ucl.add_argument("--file", required=True)
     p_ucl.add_argument("--id", required=True)
-    p_ucl.set_defaults(func=_cmd_unit_claim)
+    p_ucl.set_defaults(func=units_cli._cmd_unit_claim)
 
     p_um = sub.add_parser("units-merge")
     p_um.add_argument("--file", required=True)
     p_um.add_argument("--repo", required=True)
-    p_um.set_defaults(func=_cmd_units_merge)
+    p_um.set_defaults(func=units_cli._cmd_units_merge)
 
     p_uc = sub.add_parser("units-cleanup")
     p_uc.add_argument("--file", required=True)
     p_uc.add_argument("--repo", required=True)
     p_uc.add_argument("--wt-root", dest="wt_root", required=True)
-    p_uc.set_defaults(func=_cmd_units_cleanup)
+    p_uc.set_defaults(func=units_cli._cmd_units_cleanup)
 
     p_ur = sub.add_parser("unit-resolve")
     p_ur.add_argument("--file", required=True)
     p_ur.add_argument("--repo", required=True)
     p_ur.add_argument("--id", required=True)
-    p_ur.set_defaults(func=_cmd_unit_resolve)
+    p_ur.set_defaults(func=units_cli._cmd_unit_resolve)
 
     p_us = sub.add_parser("units-status")
     p_us.add_argument("--file", required=True)
-    p_us.set_defaults(func=_cmd_units_status)
+    p_us.set_defaults(func=units_cli._cmd_units_status)
 
     return parser
 
