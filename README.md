@@ -44,12 +44,13 @@
 
 > 以下是完整參考(安裝細節、config、引擎 CLI)。
 
-> 設計與三份實作計畫見 `docs/superpowers/specs/2026-06-30-dev-loop-v2-design.md` 與 `docs/superpowers/plans/2026-06-30-dev-loop-v2-*.md`。
-
 確定性的部分(狀態機、checkpoint、gate、review 分級、resume 排程、OpenSpec 封裝)由一個 stdlib-only 的 Python 引擎負責;判斷與換 model 的部分由 `dev-loop` skill 編排。
 
-- 設計規格:[docs/superpowers/specs/2026-06-18-dev-loop-design.md](docs/superpowers/specs/2026-06-18-dev-loop-design.md)
-- 實作計畫:[docs/superpowers/plans/2026-06-18-dev-loop-engine.md](docs/superpowers/plans/2026-06-18-dev-loop-engine.md)
+## 文件地圖
+
+- **現在的行為**:[`openspec/specs/`](openspec/specs/) — living spec,隨每次 change archive 自動同步,是行為契約的唯一真理來源。
+- **怎麼操作**:[`docs/runbooks/`](docs/runbooks/) — 各種續跑情境的操作步驟。
+- **當初為什麼這樣設計**:[`openspec/changes/archive/`](openspec/changes/archive/)(各 change 的 design/proposal/tasks 整包)與 [`docs/archive/`](docs/archive/)(2026-07 之前的歷史設計敘事與實作計畫,point-in-time,不再更新)。
 
 ## 安裝(參考)
 

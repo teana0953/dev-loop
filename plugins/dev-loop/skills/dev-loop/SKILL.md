@@ -5,7 +5,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 # Dev-Loop
 
-形式化的 agent 開發 loop。判斷性步驟由本 skill 編排;確定性狀態交給 `devloop` 引擎 CLI(見 docs/superpowers/specs/2026-06-18-dev-loop-design.md)。續跑觸發是引擎自動兜底的基礎設施,不是本 skill 要記的事(見「續跑觸發(watcher)」)。
+形式化的 agent 開發 loop。判斷性步驟由本 skill 編排;確定性狀態交給 `devloop` 引擎 CLI(行為契約見 repo 的 `openspec/specs/`)。續跑觸發是引擎自動兜底的基礎設施,不是本 skill 要記的事(見「續跑觸發(watcher)」)。
 
 ## 設定
 

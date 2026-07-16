@@ -1,3 +1,5 @@
+> **歷史實作計畫(point-in-time)**:該輪執行完成即凍結,不再更新。現行行為以 `openspec/specs/` 為準。
+
 # 移除 harness 自排 + 精準睡續跑 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
