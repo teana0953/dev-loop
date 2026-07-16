@@ -144,7 +144,7 @@ review 報告格式:
 
 報告經 strict schema 驗證(缺 `findings`、非 list、severity 非法 → exit 2 報錯,不會被當成空報告放行);空 `findings` 才是合法的 pass。
 
-通過條件:測試全綠 **且** review 無 blocking;超過最大輪數(預設 3)→ escalated 停下升級。
+通過條件:測試全綠 **且** review 無 blocking;超過最大輪數(預設 3)→ escalated 停下升級。各上限(`--max` / `--max-propose` / `--max-gate`)的 N 皆為**容許次數**:允許 N 次,第 N+1 次才升級。
 
 每次狀態轉移都追加一行到 checkpoint 同目錄的 `history.jsonl`(`ts / event / from / to / iteration`,append-only),供事後排障與耗時分析。
 

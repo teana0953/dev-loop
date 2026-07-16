@@ -94,6 +94,8 @@ def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=No
         if pending:
             return ("next: units pending: %s -> devloop units-status --file %s"
                     % (",".join(pending), checkpoint_path))
+    # legs 只在 review 階段 legs-init(SKILL 步驟 8),qa 階段恆無 legs,
+    # 故 pending-legs 提示僅判 review——這是刻意的,非漏了 qa。
     if phase == "review" and review_legs:
         pending_legs = [l["kind"] for l in review_legs if l.get("status") != "collected"]
         if pending_legs:
