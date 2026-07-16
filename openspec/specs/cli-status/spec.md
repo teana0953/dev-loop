@@ -1,7 +1,7 @@
 # cli-status Specification
 
 ## Purpose
-TBD - created by archiving change status-show-change-id. Update Purpose after archive.
+定義 `devloop status` 的輸出契約:第一行 phase/iteration/change_id/branch 識別、第二行 `next:` 下一步 hint(PHASES 窮舉)、第三行 updated_at,及 `--json` 完整輸出——讓冷啟動續跑零判斷。
 ## Requirements
 ### Requirement: status 輸出包含 change 與分支識別
 

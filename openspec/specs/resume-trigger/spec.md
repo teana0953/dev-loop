@@ -1,7 +1,7 @@
 # resume-trigger Specification
 
 ## Purpose
-TBD - created by archiving change resume-trigger-wiring. Update Purpose after archive.
+定義 token 用罄續跑的觸發機制:detached watcher 週期重試 checkpoint 的 resume_exec(回 0 即停);寫 checkpoint 的子命令自動確保 watcher 在位(auto_arm 可關、失敗不反噬)。
 ## Requirements
 ### Requirement: 週期重試 watcher
 

@@ -1,7 +1,7 @@
 # statemachine-guardrails Specification
 
 ## Purpose
-TBD - created by archiving change engine-semantics-fixes. Update Purpose after archive.
+定義狀態機的重試護欄:propose_attempts/gate_failures 計數與超限升級 escalated(N 為容許次數,第 N+1 次升級),以及 escalated 的人工續跑出口(計數歸零)。
 ## Requirements
 ### Requirement: propose 階段可回到 proposal_review
 狀態機 SHALL 提供 `propose_done` event:phase 為 `propose` 時套用後轉移到 `proposal_review`,iteration 不變。

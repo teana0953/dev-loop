@@ -1,7 +1,7 @@
 # finish-validation Specification
 
 ## Purpose
-TBD - created by archiving change engine-semantics-fixes. Update Purpose after archive.
+定義收尾策略值的驗證:config.finish 與 meta.finish 各自獨立驗證值域(merge/pr/ask),非法值(typo)即使被合法值 override 也必須 fail loudly,不得靜默退化。
 ## Requirements
 ### Requirement: finish 值域驗證
 `resolve_finish` SHALL 只接受 `merge`、`pr`、`ask`、null(未設)四種值;其他值 SHALL 視為設定錯誤。config.finish 與 meta.finish SHALL **各自獨立驗證**——非法值即使被另一來源的合法值 override 也不得靜默吞掉,錯誤訊息 SHALL 指明來源(`config.finish` 或 `meta.finish`)與值。cli `finish` 遇無效值 SHALL 印 `error: invalid finish value <來源與值>` 到 stderr 並 exit 2,不得靜默退化成 ask。
