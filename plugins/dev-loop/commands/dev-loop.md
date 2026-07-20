@@ -1,7 +1,6 @@
 ---
 description: 用固定流程跑 agent 開發 loop(brainstorm→OpenSpec→TDD→review→自動 merge);可 resume
 argument-hint: <功能需求> | resume
-model: claude-opus-4-8
 ---
 
 # /dev-loop

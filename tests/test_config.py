@@ -174,3 +174,82 @@ def test_non_bool_auto_approve_degrades_to_false(tmp_path):
     assert load_config(p).auto_approve is False
     p.write_text(json.dumps({"auto_approve": 1}), encoding="utf-8")
     assert load_config(p).auto_approve is False
+
+
+# --- model_profile / models(編排層 model 選擇,引擎只載入+驗證不分支)---
+
+
+def test_loads_model_profile_values(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"model_profile": "quality"}), encoding="utf-8")
+    assert load_config(p).model_profile == "quality"
+    p.write_text(json.dumps({"model_profile": "budget"}), encoding="utf-8")
+    assert load_config(p).model_profile == "budget"
+
+
+def test_missing_model_profile_defaults_none(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    assert load_config(p).model_profile is None
+    assert load_config(tmp_path / "nope.json").model_profile is None
+
+
+def test_loads_models_map(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": {"apply": "sonnet"}}), encoding="utf-8")
+    assert load_config(p).models == {"apply": "sonnet"}
+
+
+def test_missing_models_defaults_empty(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    assert load_config(p).models == {}
+    assert load_config(tmp_path / "nope.json").models == {}
+
+
+def test_invalid_model_profile_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"model_profile": "cheap"}), encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_config(p)
+    assert "model_profile" in str(e.value) and "cheap" in str(e.value)
+
+
+def test_models_invalid_stage_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": {"qa": "sonnet"}}), encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_config(p)
+    assert "models" in str(e.value) and "qa" in str(e.value)
+
+
+def test_models_full_model_id_rejected(tmp_path):
+    # 只收 alias,完整 model id 會隨版本更迭腐化,fail loudly
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": {"apply": "claude-sonnet-5"}}), encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_config(p)
+    assert "claude-sonnet-5" in str(e.value)
+
+
+def test_models_non_dict_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": ["sonnet"]}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
+def test_models_non_string_value_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": {"apply": 1}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
+def test_models_all_stages_and_aliases_accepted(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"models": {
+        "brainstorm": "opus", "apply": "haiku", "review": "fable", "fix": "sonnet",
+    }}), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.models["review"] == "fable"
