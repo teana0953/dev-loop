@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec propose → proposal-review(Opus) → apply+TDD(Sonnet)→ hard gate → QA gate → Opus subagent review(legs) → 自動 merge 回 trunk。人工關卡:批准設計、批准提案(兩者可用 config `auto_approve` 關閉)、超過輪數升級(恆停)。判斷步驟可選 superpowers skills 驅動(config `superpowers`)。
+description: 依固定流程用 agent 開發 — brainstorming → OpenSpec propose → proposal-review → apply+TDD → hard gate → QA gate → subagent review(legs) → 自動 merge 回 trunk。人工關卡:批准設計、批准提案(兩者可用 config `auto_approve` 關閉)、超過輪數升級(恆停)。判斷步驟可選 superpowers skills 驅動(config `superpowers`);subagent 的 model 由 config `model_profile`/`models` 決定(預設全程繼承 session 模型)。
 ---
 
 # Dev-Loop
@@ -14,6 +14,22 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 - `superpowers`:布林。true 時判斷型步驟優先用 superpowers skills 驅動(對照見「Superpowers 整合」);false 用內建做法。未設(或非布林)→ 第一次啟動時 ✋ 問使用者並寫回 config。
 - `auto_approve`:布林,預設 false。true 時「批准設計」「批准提案」兩個 ✋ 關卡自動視為批准、不停;**escalated 恆停不受此鍵影響**(它是重試耗盡/設計層 blocking 的安全閥),收尾詢問由 `finish` 鍵管。未設 → 第一次啟動時 ✋ 問使用者並寫回 config。
 - `auto_arm`:布林,預設 true。false 時關閉引擎自動 arm(僅影響 auto-arm,`arm-local` 手動路徑不受影響)。一般不需要動這個鍵。
+- `model_profile`:`"quality"`(預設,未設同此)| `"budget"`。quality = 所有 subagent 不指定 model、繼承 session 模型;budget = 省成本檔位,只路由 output 大戶(見「Model 決策」)。**有安全預設,首次啟動不詢問**(與 `superpowers`/`auto_approve`/`finish` 不同)。
+- `models`:dict,逐階段 model override,如 `{"apply": "sonnet"}`。鍵限 `brainstorm`/`apply`/`review`/`fix`,值限 alias `sonnet`/`opus`/`haiku`/`fable`——**不收完整 model id**(alias 跟著 harness 換代,config 免維護)。非法鍵值引擎 load 時直接報錯。
+
+## Model 決策
+
+dispatch subagent 時的 model 參數依序決定:**`models` 有該階段鍵 → 用其值;否則依 `model_profile` 查表;「繼承」= 不帶 model 參數(subagent 用 session 模型)**。`propose`、QA gate、proposal-review 恆繼承,不受兩鍵影響。
+
+| 階段 | quality(預設) | budget |
+|---|---|---|
+| brainstorm | 繼承 | 繼承 |
+| apply(TDD subagent) | 繼承 | `sonnet` |
+| review(code leg) | 繼承 | 繼承(但 prompt 加重,見步驟 8) |
+| fix(機械性) | 繼承 | `sonnet` |
+| fix(架構性) | 繼承 | 繼承 |
+
+budget 的取捨:執行段(apply、機械 fix)換便宜模型省 output token,把關段(brainstorm/review/架構 fix)留在 session 模型;對應護欄是 review code leg 改用 coverage-first 加重審查。
 
 ## 核心迴圈
 
@@ -25,21 +41,21 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## 流程
 
-1. **Brainstorm(Opus)**:產出設計文件——`superpowers=true` 用 `superpowers:brainstorming`,false 直接與使用者對話探索需求後撰寫。草稿寫 `.devloop/design-draft.md`(此時 change-id 未定;**不要**在 `docs/` 另存獨立設計文件)。`auto_approve=false` → ✋ 等使用者批准;true → 視為批准,直接進步驟 2。
-2. **Propose(Opus · OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名),並把批准的設計文件移入 `openspec/changes/<id>/design.md` 當唯一正本(移入後刪草稿);實作規劃直接寫 change 的 `tasks.md`,不另寫獨立 plan 文件。過程 artifact(設計/計畫/delta spec)自此都活在 change 目錄,收尾 archive 時隨 change 整包進 `openspec/changes/archive/`,設計史集中一處。
+1. **Brainstorm**:產出設計文件——`superpowers=true` 用 `superpowers:brainstorming`,false 直接與使用者對話探索需求後撰寫。草稿寫 `.devloop/design-draft.md`(此時 change-id 未定;**不要**在 `docs/` 另存獨立設計文件)。`auto_approve=false` → ✋ 等使用者批准;true → 視為批准,直接進步驟 2。
+2. **Propose(OpenSpec)**:建立切小的 OpenSpec change(產生 change-id 與短命分支名),並把批准的設計文件移入 `openspec/changes/<id>/design.md` 當唯一正本(移入後刪草稿);實作規劃直接寫 change 的 `tasks.md`,不另寫獨立 plan 文件。過程 artifact(設計/計畫/delta spec)自此都活在 change 目錄,收尾 archive 時隨 change 整包進 `openspec/changes/archive/`,設計史集中一處。
 3. **啟動引擎 + 驗證提案**:`devloop start --file .devloop/checkpoint.json --change-id <id> --branch <branch> --resume-exec "<續跑命令,如 claude -p '/dev-loop resume'>" --phase proposal_review`;接著 `devloop validate-change --file .devloop/checkpoint.json` 以 strict 確認 change 結構合法。若 start 報 `checkpoint exists`(exit 2):既有 loop 尚未完結——先跑 `status` 判斷該 resume 還是升級給使用者,**不要**逕自 `--force` 覆蓋。
-4. **Proposal Review(Opus subagent,冷啟動)**:subagent 審 change(輸入:proposal+spec+tasks、change 的 `design.md`、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
+4. **Proposal Review(subagent,冷啟動,恆繼承 session 模型)**:subagent 審 change(輸入:proposal+spec+tasks、change 的 `design.md`、.devloop/changes/<id>.json 標注),產報告 JSON(level ∈ proposal/design)。
    `devloop proposal-review --file .devloop/checkpoint.json --report <pr.json> [--max-propose N]`
    - clean → phase=apply;`auto_approve=false` → ✋ 此時等使用者批准提案;true → 視為批准,直接進步驟 5。
    - blocking(proposal)且未超過 `--max-propose`(預設 3):`propose_attempts` +1,phase=propose,自動重新 propose;propose 完成後呼叫 `devloop event --file .devloop/checkpoint.json --event propose_done` 轉回 proposal_review,再跑本步驟的 proposal-review。
    - blocking(proposal)且超過 `--max-propose`:引擎自動改轉 escalated(`propose_retry_exceeded`),✋ 升級給使用者(見「escalated 升級與人工續跑」)。
    - blocking(design)→ escalated,✋ 回 brainstorm 升級。
-5. **Apply(Sonnet · TDD)**:
+5. **Apply(TDD;subagent model 依「Model 決策」)**:
    - **判斷平行**:讀 `.devloop/changes/<change-id>.json` 的 `parallel_groups`。
    - **串行**(0 或 1 群):逐 task red→green→refactor(同 v1;`superpowers=true` 時要求遵循 `superpowers:test-driven-development`)。
    - **平行**(≥2 群):
      1. `devloop units-init --file .devloop/checkpoint.json --repo . --meta .devloop/changes/<id>.json --wt-root .devloop/wt`
-     2. 對每個 unit,dispatch 一個 Sonnet subagent 在其 `worktree` 上做該群 tasks(TDD);完成後該 subagent 回報,主編排呼叫 `unit-done --id <gid>`。
+     2. 對每個 unit,dispatch 一個 subagent(model 依「Model 決策」的 apply 階段)在其 `worktree` 上做該群 tasks(TDD);完成後該 subagent 回報,主編排呼叫 `unit-done --id <gid>`。
      3. 全部 done 後:`units-merge --file ... --repo .`。exit 1(衝突)→ 對 conflict 的 unit **退串行**:在最新短命分支 HEAD 重做該群 tasks;衝突 unit 在短命分支重做後 `unit-resolve --id <gid>`(標 merged + 清 worktree),再續 `units-merge`。
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
@@ -51,12 +67,12 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 7. **QA Gate(QA subagent;可多情境平行)**:gate 全綠後 phase=qa。subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
    `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
-8. **Review(code ‖ uiux 平行 legs)**:`legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code=Opus、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
+8. **Review(code ‖ uiux 平行 legs)**:`legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式 code leg prompt 採 coverage-first 加重審查(報所有發現含不確定與低嚴重度項、附信心與嚴重度分級,交引擎分級過濾);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)
    - `review_blocking_code` → fix(步驟 9)
    - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
-   - 若 `status` 顯示 `escalated`:停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者(見「escalated 升級與人工續跑」)。
-9. **Fix**:機械性 → Sonnet;架構性 → Opus(`superpowers=true` 且問題難纏時,subagent prompt 要求以 `superpowers:systematic-debugging` 找根因再修)。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
+   - 若 `status` 顯示 `escalated`:停止自動段,主編排產未解決問題摘要,✋ 升級給使用者(見「escalated 升級與人工續跑」)。
+9. **Fix**:先分類問題是機械性還是架構性,再依「Model 決策」的 fix 階段 dispatch(budget 下機械性用 `sonnet`、架構性繼承;`superpowers=true` 且問題難纏時,subagent prompt 要求以 `superpowers:systematic-debugging` 找根因再修)。只處理 blocking 項;完成後 `event --event fix_done`,回步驟 6。
 10. **收尾(finish 決策驅動)**:review 無 blocking 進入 merge phase 後,先問引擎決策:
    `devloop finish --file .devloop/checkpoint.json --config .devloop/config.json --meta .devloop/changes/<id>.json --followup .devloop/followup-<id>.md`
    收尾一律「**在短命分支上先 archive＋commit,再整合**」,讓 spec sync 隨分支原子併入。
@@ -89,7 +105,7 @@ description: 依固定流程用 agent 開發 — brainstorming(Opus)→ OpenSpec
 
 ## escalated 升級與人工續跑
 
-phase 進到 `escalated` 的三種來源:proposal-review 判 design 層 blocking、`--max-propose` 超限(重複 blocking proposal)、`--max-gate` 超限(重複 gate 失敗)。任一情況都停止自動段,Opus 產未解決問題摘要,✋ 升級給使用者——**不受 `auto_approve` 影響,恆停**:批准關卡可自動化,安全閥不行。
+phase 進到 `escalated` 的三種來源:proposal-review 判 design 層 blocking、`--max-propose` 超限(重複 blocking proposal)、`--max-gate` 超限(重複 gate 失敗)。任一情況都停止自動段,主編排產未解決問題摘要,✋ 升級給使用者——**不受 `auto_approve` 影響,恆停**:批准關卡可自動化,安全閥不行。
 
 使用者處理完根因後(修正設計方向、重新規劃 propose 內容,或手動排除卡住 gate 的問題),依情境選一個人工續跑出口——套用成功後 `iteration`、`propose_attempts`、`gate_failures` 三個計數會全部歸零,重新起算上限:
 

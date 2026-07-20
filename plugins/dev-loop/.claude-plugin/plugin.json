@@ -1,6 +1,6 @@
 {
   "name": "dev-loop",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "固定流程的 agent 開發 loop:brainstorm→OpenSpec→TDD→review→自動 merge,含 trunk-based 收尾與 teardown 清殘留。需 python3/git/openspec。",
   "author": { "name": "Tina Liang", "email": "teana0953@gmail.com" },
   "license": "MIT"
