@@ -74,18 +74,28 @@ def test_sweep_change_meta_moves_then_idempotent(tmp_path):
     assert sweep_change_meta(cp, "c1") is False
 
 
-def test_delete_merged_branch_true_for_merged(repo):
+def test_delete_merged_branch_deleted_for_merged(repo):
     _run(repo, "checkout", "-b", "feat")
     (repo / "f.txt").write_text("x\n"); _run(repo, "add", "."); _run(repo, "commit", "-m", "f")
     _run(repo, "checkout", "main"); _run(repo, "merge", "--no-ff", "-m", "m", "feat")
-    assert delete_merged_branch(repo, "feat") is True
+    assert delete_merged_branch(repo, "feat") == "deleted"
 
 
-def test_delete_merged_branch_false_for_unmerged(repo):
+def test_delete_merged_branch_unmerged(repo):
     _run(repo, "checkout", "-b", "feat")
     (repo / "f.txt").write_text("x\n"); _run(repo, "add", "."); _run(repo, "commit", "-m", "f")
     _run(repo, "checkout", "main")
-    assert delete_merged_branch(repo, "feat") is False  # 未 merged,-d 拒刪
+    assert delete_merged_branch(repo, "feat") == "unmerged"  # 未 merged,-d 拒刪
+
+
+def test_delete_merged_branch_checked_out(repo):
+    # 當前 checked-out 分支不可刪,原因要能區分(不是 unmerged/absent)
+    _run(repo, "checkout", "-b", "feat")
+    assert delete_merged_branch(repo, "feat") == "checked_out"
+
+
+def test_delete_merged_branch_absent(repo):
+    assert delete_merged_branch(repo, "no-such-branch") == "absent"
 
 
 from devloop.checkpoint import Checkpoint
@@ -147,3 +157,41 @@ def test_teardown_done_does_not_rearm_watcher(repo):
     assert code == 0
     assert Checkpoint.load(cp).phase == "done"
     assert not (devloop_dir / "watcher.pid").exists()  # 終態不得重新 arm
+
+
+def test_teardown_mode_defaults_to_checkpoint_finish_mode(repo, capsys):
+    cp = _teardown_repo_with_checkpoint(repo, "merge")
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "deleted" in out  # merge 模式:已 merged 的短命分支被刪
+    assert Checkpoint.load(cp).phase == "done"
+
+
+def test_teardown_mode_override_wins(repo, capsys):
+    cp = _teardown_repo_with_checkpoint(repo, "merge")
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo), "--mode", "pr"])
+    assert code == 0
+    assert "kept (pr)" in capsys.readouterr().out  # override 蓋過 checkpoint 的 merge
+
+
+def test_teardown_no_mode_anywhere_exits_2(repo, capsys):
+    cp = repo / ".devloop" / "checkpoint.json"
+    Checkpoint(phase="teardown", change_id="x", branch="loop-x").save(cp)
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo)])
+    assert code == 2
+    assert "mode" in capsys.readouterr().err
+    assert Checkpoint.load(cp).phase == "teardown"  # checkpoint 不動
+
+
+def test_teardown_checked_out_branch_message(repo, capsys):
+    # merge 模式但短命分支仍 checked-out:訊息要精確,teardown 仍續行到 done
+    _run(repo, "checkout", "-b", "loop-x")
+    cp = repo / ".devloop" / "checkpoint.json"
+    Checkpoint(phase="teardown", change_id="x", branch="loop-x",
+               finish_mode="merge").save(cp)
+    code = main(["teardown", "--file", str(cp), "--repo", str(repo)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "checked out" in out
+    assert "unmerged/absent" not in out

@@ -1599,3 +1599,42 @@ def test_event_without_finish_mode_leaves_it_none(tmp_path):
     Checkpoint(phase="apply", change_id="c", branch="b").save(f)
     main(["event", "--file", str(f), "--event", "apply_done"])
     assert Checkpoint.load(f).finish_mode is None
+
+
+# --- model 子命令(dispatch 前查引擎決議)---
+
+
+def test_model_cmd_prints_alias_for_budget_apply(tmp_path, capsys):
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"model_profile": "budget"}')
+    code = main(["model", "--stage", "apply", "--config", str(cfg)])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == "sonnet"
+
+
+def test_model_cmd_prints_inherit_for_quality(tmp_path, capsys):
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"model_profile": "quality"}')
+    code = main(["model", "--stage", "apply", "--config", str(cfg)])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == "inherit"
+
+
+def test_model_cmd_missing_config_file_inherits(tmp_path, capsys):
+    # 無 config 檔 = 預設 quality = inherit(load_config 缺檔回預設)
+    code = main(["model", "--stage", "review", "--config", str(tmp_path / "nope.json")])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == "inherit"
+
+
+def test_model_cmd_invalid_config_exits_2(tmp_path, capsys):
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"model_profile": "cheap"}')
+    code = main(["model", "--stage", "apply", "--config", str(cfg)])
+    assert code == 2
+    assert "cheap" in capsys.readouterr().err
+
+
+def test_model_cmd_rejects_invalid_stage(tmp_path):
+    with pytest.raises(SystemExit):  # argparse choices 拒絕
+        main(["model", "--stage", "qa", "--config", str(tmp_path / "c.json")])

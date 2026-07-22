@@ -47,6 +47,23 @@ def validate_model_config(model_profile, models):
                              % (stage, alias, "/".join(VALID_MODEL_ALIASES)))
 
 
+# budget 只路由 output 大戶:執行段換便宜模型,把關段(brainstorm/review)繼承。
+# fix 回 budget 建議值 sonnet;「架構性 fix 忽略建議改繼承」是編排層判斷,引擎不碰。
+_BUDGET_ROUTES = {"apply": "sonnet", "fix": "sonnet"}
+
+
+def resolve_model(stage, config) -> str | None:
+    """階段 model 決議(單一真理來源):models override → profile 查表 → None(繼承)。
+    stage 不合法拋 ValueError(呼叫端 bug,fail loudly)。"""
+    if stage not in VALID_MODEL_STAGES:
+        raise ValueError("stage %r (valid: %s)" % (stage, "/".join(VALID_MODEL_STAGES)))
+    if stage in config.models:
+        return config.models[stage]
+    if config.model_profile == "budget":
+        return _BUDGET_ROUTES.get(stage)
+    return None
+
+
 def load_config(path) -> Config:
     p = Path(path)
     if not p.exists():

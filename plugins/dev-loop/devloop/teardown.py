@@ -70,9 +70,17 @@ def sweep_change_meta(checkpoint_path, change_id) -> bool:
     return True
 
 
-def delete_merged_branch(repo, branch) -> bool:
+def delete_merged_branch(repo, branch) -> str:
     """git branch -d(safe delete:僅已 merged 才刪)。
-    回傳是否刪成功;未 merged / 不存在時 git 回非 0 → False(非致命)。"""
+    回傳原因 "deleted"/"checked_out"/"unmerged"/"absent"(git stderr 判別;
+    文案隨 git 版本變動時保守歸 "unmerged"——訊息 less 精確但不誤導)。非致命。"""
     r = subprocess.run(["git", "-C", str(repo), "branch", "-d", branch],
                        capture_output=True, text=True)
-    return r.returncode == 0
+    if r.returncode == 0:
+        return "deleted"
+    err = r.stderr.lower()
+    if "checked out" in err or "used by worktree" in err:
+        return "checked_out"
+    if "not found" in err:
+        return "absent"
+    return "unmerged"

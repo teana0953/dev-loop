@@ -253,3 +253,41 @@ def test_models_all_stages_and_aliases_accepted(tmp_path):
     }}), encoding="utf-8")
     cfg = load_config(p)
     assert cfg.models["review"] == "fable"
+
+
+# --- resolve_model(model 決策下沉引擎:單一真理來源、可測試)---
+
+
+from devloop.config import resolve_model
+
+
+def test_resolve_model_quality_all_inherit():
+    cfg = Config(model_profile="quality")
+    for stage in ("brainstorm", "apply", "review", "fix"):
+        assert resolve_model(stage, cfg) is None
+    # 未設 profile 同 quality
+    for stage in ("brainstorm", "apply", "review", "fix"):
+        assert resolve_model(stage, Config()) is None
+
+
+def test_resolve_model_budget_routes_output_heavy_stages():
+    cfg = Config(model_profile="budget")
+    assert resolve_model("apply", cfg) == "sonnet"
+    assert resolve_model("fix", cfg) == "sonnet"
+    assert resolve_model("brainstorm", cfg) is None
+    assert resolve_model("review", cfg) is None
+
+
+def test_resolve_model_models_override_wins():
+    cfg = Config(model_profile="budget", models={"apply": "haiku"})
+    assert resolve_model("apply", cfg) == "haiku"
+    assert resolve_model("fix", cfg) == "sonnet"  # 未 override 的仍走 profile
+    # quality 下 override 也生效
+    cfg2 = Config(model_profile="quality", models={"review": "opus"})
+    assert resolve_model("review", cfg2) == "opus"
+
+
+def test_resolve_model_invalid_stage_raises():
+    with pytest.raises(ValueError) as e:
+        resolve_model("qa", Config())
+    assert "qa" in str(e.value)
