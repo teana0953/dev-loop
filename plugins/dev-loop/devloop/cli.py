@@ -30,6 +30,7 @@ from devloop.statemachine import (
     HUMAN_RESUME_PROPOSE,
     PROPOSE_BLOCKING_PROPOSAL,
     PROPOSE_RETRY_EXCEEDED,
+    QA_SKIP,
     TEARDOWN_DONE,
     InvalidTransition,
     PHASES,
@@ -68,11 +69,24 @@ def _cmd_start(args):
                 file=sys.stderr,
             )
             return 2
+    # 流程軸凍結:--meta 給了就從 change meta 複製 flow_profile/needs_uiux;
+    # meta 檔缺失走預設(propose 可能尚未寫);非法值 fail loudly 且不建 checkpoint。
+    flow_profile, needs_uiux = "full", False
+    if getattr(args, "meta", None):
+        try:
+            meta = load_change_meta(args.meta)
+        except ValueError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+        flow_profile = meta.flow_profile or "full"
+        needs_uiux = meta.needs_uiux is True
     cp = Checkpoint(
         phase=args.phase,
         change_id=args.change_id,
         branch=args.branch,
         resume_exec=args.resume_exec,
+        flow_profile=flow_profile,
+        needs_uiux=needs_uiux,
     )
     _save_with_history(cp, args, "start", None)
     return 0
@@ -82,7 +96,8 @@ def _cmd_status(args):
     cp = Checkpoint.load(args.file)
     config = load_config(Path(args.file).parent / "config.json")
     hint = next_hint(cp.phase, args.file, units=cp.units, review_legs=cp.review_legs,
-                     gate_cmds=config.gate_cmds, finish_mode=cp.finish_mode)
+                     gate_cmds=config.gate_cmds, finish_mode=cp.finish_mode,
+                     flow_profile=cp.flow_profile, needs_uiux=cp.needs_uiux)
     _warn_if_watcher_missing(cp, args.file)
     if args.json:
         payload = asdict(cp)
@@ -121,6 +136,17 @@ def _apply_event(cp, event, max_iterations):
 
 def _cmd_event(args):
     cp = Checkpoint.load(args.file)
+    # qa_skip 只在 light 且非 uiux 放行:裁剪必須有檔位授權,且 UX 線不可裁
+    # (light+uiux 的 QA 保留以驗 UX 驗收)。guard 讀 checkpoint(start 時凍結)。
+    if args.event == QA_SKIP and not (
+        cp.flow_profile == "light" and not cp.needs_uiux
+    ):
+        print(
+            "error: qa_skip requires flow_profile=light and needs_uiux=false "
+            "(got %s/%s)" % (cp.flow_profile, cp.needs_uiux),
+            file=sys.stderr,
+        )
+        return 2
     from_phase = cp.phase
     cp = _apply_event(cp, args.event, args.max)
     if args.event in (HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX):
@@ -401,6 +427,8 @@ def build_parser():
     p_start.add_argument("--branch", required=True)
     p_start.add_argument("--resume-exec", dest="resume_exec", default=None)
     p_start.add_argument("--phase", default="apply", choices=PHASES)
+    p_start.add_argument("--meta", default=None,
+                         help="change meta 路徑;凍結 flow_profile/needs_uiux 進 checkpoint")
     p_start.add_argument("--force", action="store_true",
                          help="覆蓋非 done 的既有 checkpoint(預設拒絕,防丟進行中的 loop)")
     p_start.set_defaults(func=_cmd_start)

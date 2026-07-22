@@ -4,7 +4,9 @@
 
 把「用 agent 開發」的固定流程形式化成一個可重複、可中斷續跑、只在關鍵點需人工的 loop。
 
-**流程**:brainstorm(可選 superpowers 驅動)→ ✋批准設計 → OpenSpec propose → proposal-review(自動修到乾淨)→ ✋批准提案 → apply + TDD(可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask)。subagent 預設全程繼承 session 模型;要省成本可用 config `model_profile: "budget"`(apply/機械 fix 改走 `sonnet`)或 `models` 逐階段指定。兩個 ✋ 批准關卡可用 `auto_approve` 關閉(escalated 安全閥恆停);token 用罄則由 detached watcher 兜底自動續跑。
+**流程**:brainstorm(可選 superpowers 驅動)→ ✋批准設計 → OpenSpec propose → proposal-review(自動修到乾淨)→ ✋批准提案 → apply + TDD(可平行 worktree)→ hard gate → QA gate → code ‖ UI-UX review legs → fix↺ → 依 config 收尾(merge / pr / ask)。subagent 預設全程繼承 session 模型;要省成本可用 config `model_profile: "budget"`(apply/機械 fix 改走 `sonnet`)或 `models` 逐階段指定。
+
+**兩條自動判定軸**(brainstorm 時編排判、批准提案時可推翻):**流程檔位** `flow_profile`——小 change(docs/config/微調)走 `light`:設計併入提案、跳過批准設計、QA 誠實跳過(`qa_skip` 有引擎 guard 與 history 記錄),hard gate 與 review 恆在;**UI/UX 線** `needs_uiux`——觸及使用者可見介面/互動的 change,設計含 UI/UX 節、spec 含可驗 UX 驗收、QA 驗 UX、review 加 uiux leg。兩軸正交,且 **UX 線不受裁剪**(light+uiux 時 QA 保留只驗 UX)。兩個 ✋ 批准關卡可用 `auto_approve` 關閉(escalated 安全閥恆停);token 用罄則由 detached watcher 兜底自動續跑。
 
 ## Quickstart(第一次用)
 

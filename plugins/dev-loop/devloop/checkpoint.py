@@ -23,6 +23,9 @@ class Checkpoint:
     propose_attempts: int = 0
     gate_failures: int = 0
     finish_mode: str = None
+    # 流程軸(start 時自 change meta 凍結;qa_skip guard 與 next hint 只讀這裡)
+    flow_profile: str = "full"
+    needs_uiux: bool = False
 
     def save(self, path) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()

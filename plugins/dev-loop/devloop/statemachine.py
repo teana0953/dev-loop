@@ -25,6 +25,7 @@ GATE_PASS = "gate_pass"
 GATE_FAIL = "gate_fail"
 QA_PASS = "qa_pass"
 QA_FAIL = "qa_fail"
+QA_SKIP = "qa_skip"  # light 檔位的誠實裁剪(CLI guard:light 且非 uiux 才放行)
 REVIEW_NO_BLOCKING = "review_no_blocking"
 REVIEW_BLOCKING_CODE = "review_blocking_code"
 REVIEW_BLOCKING_PROPOSAL = "review_blocking_proposal"
@@ -75,14 +76,19 @@ _TERMINAL_HINTS = {
 
 
 def next_hint(phase, checkpoint_path, units=None, review_legs=None, gate_cmds=None,
-              finish_mode=None):
+              finish_mode=None, flow_profile=None, needs_uiux=None):
     """依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。
 
     gate_cmds 非空(config 已存 gate 命令)時,gate hint 給完整可執行命令
     (引擎會 fallback 到 config),而非 `<test-cmd>` 骨架。
 
     finish_mode 有值時(checkpoint 已記錄 merge/pr),teardown hint 給完整
-    可執行命令;無值時給 `<merge|pr>` 骨架待人工/引擎補上。"""
+    可執行命令;無值時給 `<merge|pr>` 骨架待人工/引擎補上。
+
+    qa 階段依流程軸分岔:flow_profile=light 且非 uiux → 裁剪路徑 hint qa_skip
+    (UX 線不受裁剪:uiux 時照 qa 骨架,QA 只驗 UX 驗收)。"""
+    if phase == "qa" and flow_profile == "light" and not needs_uiux:
+        return "next: devloop event --file %s --event qa_skip" % checkpoint_path
     if phase == "gate" and gate_cmds:
         return "next: devloop gate --file %s" % checkpoint_path
     if phase == "teardown":
@@ -131,6 +137,8 @@ def transition(phase, iteration, event, max_iterations=DEFAULT_MAX_ITERATIONS):
             return ("escalated", new_iteration)
         return ("qa", new_iteration)
     if phase == "qa" and event == QA_PASS:
+        return ("review", iteration)
+    if phase == "qa" and event == QA_SKIP:
         return ("review", iteration)
     if phase == "qa" and event == QA_FAIL:
         return ("fix", iteration)
