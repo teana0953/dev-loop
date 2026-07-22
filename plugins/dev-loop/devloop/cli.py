@@ -11,7 +11,7 @@ from devloop import units_cli, watcher
 from devloop.adapter import DEFAULT_HEARTBEAT, run_watcher
 from devloop.changemeta import load_change_meta
 from devloop.checkpoint import Checkpoint
-from devloop.config import load_config, resolve_finish, validate_gate_cmds
+from devloop.config import load_config, resolve_finish, resolve_model, validate_gate_cmds
 from devloop.finish import render_followup, write_followup
 from devloop.gate import run_gate
 from devloop.history import append_history
@@ -326,14 +326,23 @@ def _cmd_teardown(args):
     清理各步驟 idempotent、非致命失敗僅印字不阻斷;真正會擋住的只有 phase 不對時
     transition 拋出的 InvalidTransition。"""
     cp = Checkpoint.load(args.file)
+    # mode 真理來源是 checkpoint 的 finish_mode;--mode 僅為人工 override。
+    # 皆無不猜(刪分支不可逆),exit 2 且 checkpoint 不動。
+    mode = args.mode or cp.finish_mode
+    if mode not in ("merge", "pr"):
+        print("error: no mode: pass --mode or run `event --finish-mode` first",
+              file=sys.stderr)
+        return 2
     wt_root = args.wt_root or (Path(args.file).parent / "wt")
     print("watcher: %s" % disarm_watcher(args.file))
     print("worktrees pruned: %d" % prune_orphan_worktrees(args.repo, wt_root))
     if sweep_change_meta(args.file, cp.change_id):
         print("swept change meta: %s" % cp.change_id)
-    if args.mode == "merge":
-        ok = delete_merged_branch(args.repo, cp.branch)
-        print("branch %s: %s" % (cp.branch, "deleted" if ok else "kept (unmerged/absent)"))
+    if mode == "merge":
+        reason = delete_merged_branch(args.repo, cp.branch)
+        msg = {"deleted": "deleted", "checked_out": "kept (checked out)",
+               "unmerged": "kept (unmerged)", "absent": "kept (absent)"}[reason]
+        print("branch %s: %s" % (cp.branch, msg))
     else:
         print("branch %s: kept (pr)" % cp.branch)
     from_phase = cp.phase
@@ -344,6 +353,19 @@ def _cmd_teardown(args):
         return 2
     _save_with_history(cp, args, TEARDOWN_DONE, from_phase)
     print("phase=%s" % cp.phase)
+    return 0
+
+
+def _cmd_model(args):
+    """階段 model 決議(dispatch subagent 前查詢):印 alias 或 inherit。
+    決策真理來源在引擎(resolve_model),SKILL 只照做;config 非法 exit 2。"""
+    try:
+        config = load_config(args.config)
+        alias = resolve_model(args.stage, config)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    print(alias if alias is not None else "inherit")
     return 0
 
 
@@ -467,7 +489,8 @@ def build_parser():
     p_teardown = sub.add_parser("teardown")
     p_teardown.add_argument("--file", required=True)
     p_teardown.add_argument("--repo", default=".")
-    p_teardown.add_argument("--mode", required=True, choices=("merge", "pr"))
+    p_teardown.add_argument("--mode", default=None, choices=("merge", "pr"),
+                            help="override;未給時讀 checkpoint 的 finish_mode")
     p_teardown.add_argument("--wt-root", dest="wt_root", default=None)
     p_teardown.add_argument("--max", type=int, default=DEFAULT_MAX_ITERATIONS)
     p_teardown.set_defaults(func=_cmd_teardown)
@@ -478,6 +501,12 @@ def build_parser():
     p_finish.add_argument("--meta", required=True)
     p_finish.add_argument("--followup", required=True)
     p_finish.set_defaults(func=_cmd_finish)
+
+    p_model = sub.add_parser("model")
+    p_model.add_argument("--stage", required=True,
+                         choices=("brainstorm", "apply", "review", "fix"))
+    p_model.add_argument("--config", default=".devloop/config.json")
+    p_model.set_defaults(func=_cmd_model)
 
     p_ui = sub.add_parser("units-init")
     p_ui.add_argument("--file", required=True)

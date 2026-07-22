@@ -83,7 +83,7 @@
 - `auto_approve`:布林,預設 false。true 時「批准設計」「批准提案」兩個人工關卡自動通過;**escalated 安全閥恆停,不受此鍵影響**。只認 JSON `true`,錯值朝「要人工」方向保守退化。未設 → 第一次啟動時問使用者一次並寫回。
 - `auto_arm`:布林,預設 true。引擎在每個寫 checkpoint 的子命令之後自動確保 watcher 在位;設 false 關閉此自動行為(手動 `arm-local` 不受影響),一般不需要動這個鍵。
 - `model_profile`:`"quality"`(預設,未設同此)| `"budget"`。quality = 所有 subagent 繼承 session 模型(品質最優);budget = 省成本檔位——apply(TDD)與機械性 fix 改用 `sonnet`,把關步驟(brainstorm/review/架構性 fix)仍留在 session 模型,且 review 自動改用 coverage-first 加重審查當護欄。取捨:執行段品質換 output token 成本。有安全預設,首次啟動不會問。
-- `models`:dict,逐階段 model override(優先於 `model_profile`),如 `{"apply": "haiku"}`。鍵限 `brainstorm`/`apply`/`review`/`fix`,值限 alias(`sonnet`/`opus`/`haiku`/`fable`),**不收完整 model id**——alias 跟著 Claude Code 換代,config 免維護;非法鍵值啟動時直接報錯。
+- `models`:dict,逐階段 model override(優先於 `model_profile`),如 `{"apply": "haiku"}`。鍵限 `brainstorm`/`apply`/`review`/`fix`,值限 alias(`sonnet`/`opus`/`haiku`/`fable`),**不收完整 model id**——alias 跟著 Claude Code 換代,config 免維護;非法鍵值啟動時直接報錯。想確認某階段實際會用哪個 model:`devloop model --stage apply`(印 alias 或 `inherit`)。
 
 checkpoint 落在各專案的 `.devloop/`,狀態彼此獨立。人工關卡有哪些、以及 `auto_approve: true` + `finish: merge` 的全自動組合,見 Quickstart 第 4 點與其後說明。
 
