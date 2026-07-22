@@ -140,3 +140,23 @@ def test_load_legacy_checkpoint_without_finish_mode(tmp_path):
     f.write_text(json.dumps(
         {"phase": "merge", "change_id": "c", "branch": "b"}), encoding="utf-8")
     assert Checkpoint.load(f).finish_mode is None
+
+
+# --- flow_profile / needs_uiux 欄位(舊 checkpoint 缺鍵走預設)---
+
+
+def test_checkpoint_flow_fields_defaults(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b").save(f)
+    cp = Checkpoint.load(f)
+    assert cp.flow_profile == "full"
+    assert cp.needs_uiux is False
+
+
+def test_checkpoint_flow_fields_roundtrip(tmp_path):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b",
+               flow_profile="light", needs_uiux=True).save(f)
+    cp = Checkpoint.load(f)
+    assert cp.flow_profile == "light"
+    assert cp.needs_uiux is True

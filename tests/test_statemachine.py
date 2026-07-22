@@ -259,3 +259,16 @@ def test_next_hint_teardown_fills_finish_mode():
 def test_next_hint_teardown_skeleton_when_mode_absent():
     h = next_hint("teardown", "/x/cp.json")
     assert "<merge|pr>" in h
+
+
+# --- qa_skip(light 裁剪的誠實轉移;guard 在 CLI 層)---
+
+
+def test_qa_skip_transitions_qa_to_review():
+    assert transition("qa", 2, "qa_skip") == ("review", 2)
+
+
+def test_qa_skip_invalid_from_other_phases():
+    for phase in ("gate", "apply", "review", "brainstorm"):
+        with pytest.raises(InvalidTransition):
+            transition(phase, 1, "qa_skip")

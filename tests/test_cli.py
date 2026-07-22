@@ -1638,3 +1638,89 @@ def test_model_cmd_invalid_config_exits_2(tmp_path, capsys):
 def test_model_cmd_rejects_invalid_stage(tmp_path):
     with pytest.raises(SystemExit):  # argparse choices 拒絕
         main(["model", "--stage", "qa", "--config", str(tmp_path / "c.json")])
+
+
+# --- start --meta 凍結兩軸 / qa_skip guard / qa hint 分岔 ---
+
+
+def test_start_meta_freezes_flow_axes(tmp_path):
+    f = tmp_path / "cp.json"
+    meta = tmp_path / "m.json"
+    meta.write_text('{"flow_profile": "light", "needs_uiux": true}')
+    code = main(["start", "--file", str(f), "--change-id", "c", "--branch", "b",
+                 "--meta", str(meta)])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.flow_profile == "light"
+    assert cp.needs_uiux is True
+
+
+def test_start_meta_missing_file_uses_defaults(tmp_path):
+    f = tmp_path / "cp.json"
+    code = main(["start", "--file", str(f), "--change-id", "c", "--branch", "b",
+                 "--meta", str(tmp_path / "nope.json")])
+    assert code == 0
+    cp = Checkpoint.load(f)
+    assert cp.flow_profile == "full"
+    assert cp.needs_uiux is False
+
+
+def test_start_meta_invalid_profile_exits_2(tmp_path, capsys):
+    f = tmp_path / "cp.json"
+    meta = tmp_path / "m.json"
+    meta.write_text('{"flow_profile": "lite"}')
+    code = main(["start", "--file", str(f), "--change-id", "c", "--branch", "b",
+                 "--meta", str(meta)])
+    assert code == 2
+    assert not f.exists()  # 不建 checkpoint
+    assert "lite" in capsys.readouterr().err
+
+
+def _qa_checkpoint(tmp_path, profile="full", uiux=False):
+    f = tmp_path / "cp.json"
+    Checkpoint(phase="qa", change_id="c", branch="b",
+               flow_profile=profile, needs_uiux=uiux).save(f)
+    return f
+
+
+def test_event_qa_skip_allowed_light_non_uiux(tmp_path):
+    f = _qa_checkpoint(tmp_path, "light", False)
+    code = main(["event", "--file", str(f), "--event", "qa_skip"])
+    assert code == 0
+    assert Checkpoint.load(f).phase == "review"
+    # 誠實轉移:history 記錄 qa_skip
+    hist = (tmp_path / "history.jsonl").read_text()
+    assert "qa_skip" in hist
+
+
+def test_event_qa_skip_denied_full(tmp_path, capsys):
+    f = _qa_checkpoint(tmp_path, "full", False)
+    code = main(["event", "--file", str(f), "--event", "qa_skip"])
+    assert code == 2
+    assert Checkpoint.load(f).phase == "qa"  # checkpoint 不動
+    assert "qa_skip" in capsys.readouterr().err
+
+
+def test_event_qa_skip_denied_light_uiux(tmp_path, capsys):
+    # UX 線不受裁剪:light+uiux 的 QA 保留(驗 UX 驗收)
+    f = _qa_checkpoint(tmp_path, "light", True)
+    code = main(["event", "--file", str(f), "--event", "qa_skip"])
+    assert code == 2
+    assert Checkpoint.load(f).phase == "qa"
+
+
+def test_status_qa_hint_qa_skip_for_light_non_uiux(tmp_path, capsys):
+    f = _qa_checkpoint(tmp_path, "light", False)
+    code = main(["status", "--file", str(f)])
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "qa_skip" in lines[1] and "event" in lines[1]
+
+
+def test_status_qa_hint_normal_for_light_uiux_and_full(tmp_path, capsys):
+    f = _qa_checkpoint(tmp_path, "light", True)
+    main(["status", "--file", str(f)])
+    assert "qa_skip" not in capsys.readouterr().out
+    f2 = _qa_checkpoint(tmp_path, "full", False)
+    main(["status", "--file", str(f2)])
+    assert "qa_skip" not in capsys.readouterr().out
