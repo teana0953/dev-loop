@@ -25,7 +25,7 @@ argument-hint: <功能需求> | resume
 - **怎麼起**:`/dev-loop <你要的功能>`,例如 `/dev-loop 幫我加一個匯出 CSV 的按鈕`。
 - **順手檢查前置**(缺什麼就給對應指令,別自動幫他裝/init):
   - `python3` / `git` / `openspec` 都在嗎?(缺 openspec:`npm i -g @fission-ai/openspec`)
-  - 可選增益 `caveman`(省 token)/ `code-review-graph`(review 選檔)在嗎?缺了照跑,想裝見 README。
+  - 可選增益 `caveman`(省 token)/ `code-review-graph`(review 時多給波及範圍線索)在嗎?缺了照跑,想裝見 README。
   - 當前是 git repo 嗎?(否:`git init`)
   - 當前專案 `openspec init` 過了嗎(有沒有 `openspec/` 目錄)?(否:`openspec init --tools claude`)
 - **只會停在三處 ✋**:批准設計、批准提案、以及卡住時的 escalated——其餘自動(apply→gate→QA→review→fix→merge)。
