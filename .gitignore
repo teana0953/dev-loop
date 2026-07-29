@@ -4,3 +4,4 @@ __pycache__/
 .devloop/
 .claude/worktrees/
 .superpowers/
+.code-review-graph/
