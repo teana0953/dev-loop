@@ -64,7 +64,7 @@
 可選增益(缺了 loop 照跑,只是少了對應好處):
 
 - `caveman`——壓縮 agent 輸出省 token,裝了自動作用於 loop 內所有 subagent。安裝:`curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | bash`(需 Node ≥18)。
-- `code-review-graph`——建專案結構圖,review 階段只餵相關檔給 reviewer subagent。安裝:`pip install code-review-graph`(需 Python 3.10+)。loop 起手會自動 build、apply 後自動 update;缺它則 review 退回讀整包 diff。
+- `code-review-graph`——建專案結構圖,review 階段只餵相關檔給 reviewer subagent。安裝:`pip install code-review-graph`(需 Python 3.10+)。loop 起手會自動 build;review 步驟開始時自動 update(同一次呼叫涵蓋 apply 與此前每一輪 fix 的異動,單一事實來源);缺它則 review 退回讀整包 diff。
 
 裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
 

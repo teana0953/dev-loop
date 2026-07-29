@@ -98,11 +98,15 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
 
    取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔;**注意這些是絕對路徑**,而 `git diff --name-only` 印的是 repo-relative 路徑——用之前先把 `impacted_files` 正規化成 repo-relative,再跟改動檔比較/聯集,否則同一檔案兩種寫法會被當成兩個不同檔重複計)。
 
-   給各 leg subagent 的閱讀範圍是**兩塊,都要給**(合稱取代讀整包 diff,而不是只給檔名或只給內容):
-   - (a) 範圍化 diff,看「改了什麼」:`git diff <trunk>...HEAD -- <改動檔...>`
-   - (b) 波及範圍的上下文:`impacted_files` 中不在改動檔集合裡的那些檔案,讀它們**目前內容**(不是 diff——這些檔沒改,只是被波及,給現在的樣子當 blast-radius 參考)
+   給各 leg subagent 的閱讀範圍是**兩塊,性質不同、都要給**:
+   - (a) 範圍化 diff,看「改了什麼」:`git diff <trunk>...HEAD -- <改動檔...>`。**誠實說明**:`<改動檔...>` 本來就是全部改動檔,這裡的 `--` 限制對範圍**沒有縮小效果**,必然等於不加限制的整包 diff——審查本來就得看完每個真的改了的檔案,這塊不可能、也不該再縮小。
+   - (b) 波及範圍(blast radius)的**檔名清單**,不是內容:把 `impacted_files` 正規化成 repo-relative 後,扣掉已經在改動檔集合裡的那些,得到「波及檔清單」;只把這份**清單(檔案路徑)**交給 reviewer,**不要**把每個波及檔的目前內容預先整份塞進 prompt——reviewer 看完 (a) 的 diff 後,若判斷某處改動可能牽動清單裡的特定檔案,自行用 Read 工具打開該檔確認即可,清單裡其餘檔案不必逐一讀完。
 
-   JSON 另附 `context_savings` 省 token 估算,僅供參考。**退回現行做法(讀整包 diff)的觸發條件有二,任一成立即退回**:① 工具不在、圖不在或 `impact` 命令非 0 退出;② 命令雖 exit 0,但回傳的 `impacted_files` 與 `changed_nodes` 皆為空——這代表圖還不認得這批檔(圖 miss),不是「真的沒有波及檔」,不能悄悄把範圍縮成只有改動檔。code leg 與 uiux leg 同吃這份範圍。
+   **這才是真正縮小範圍的地方**:(a) 必然等於整包 diff(不可縮小,也不假裝縮小);(b) 從「每個波及檔都整份塞內容」改成「只給一份短檔名清單」——波及檔清單為空時(改動已收斂、依賴與測試多半已在改動檔內,小步 TDD 改動的常態),兩塊材料合計跟退回讀整包 diff **完全等量**,不多不少;波及檔清單非空時,多出來的只是幾行路徑文字,不是被波及檔案的完整內容(後者才是舊版真正「比整包 diff 還多」的病灶,這裡已經拿掉)。換句話說:比起現行整包 diff 做法,新流程**不會更多**——常態(波及檔為空)下持平,其餘情況只多一份可忽略的清單;真正的省 token 效果來自不再對每個波及檔案囫圇塞全文,讓 reviewer 依需要才讀。
+
+   `context_savings` 欄位是 code-review-graph 工具自己估的省 token 量,比較基準是「不用圖時得掃整個 codebase 找關聯」——跟本文自己的退回基準(讀整包 diff)不是同一件事,**不能**拿來宣稱本文範圍比整包 diff 小,本文不再引用它做任何比較主張。
+
+   **退回現行做法(讀整包 diff)的觸發條件有二,任一成立即退回**:① 工具不在、圖不在或 `impact` 命令非 0 退出;② 命令雖 exit 0,但回傳的 `impacted_files` 與 `changed_nodes` 皆為空——這代表圖還不認得這批檔(圖 miss),不是「真的沒有波及檔」,不能悄悄把範圍縮成只有改動檔。code leg 與 uiux leg 同吃這份範圍。
 
    接著 `legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)

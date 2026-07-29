@@ -83,12 +83,51 @@ def test_skill_documents_stale_graph_miss_falls_back_too():
 
 
 def test_skill_clarifies_two_explicit_reading_inputs_for_legs():
-    """"取代讀整包 diff" 讀起來會讓人以為 leg subagent 只拿到檔名清單、完全沒看到
-    diff——必須把兩個輸入攤開寫清楚:(a) 範圍化 diff 看改了什麼,(b) 波及檔(不在
-    改動集合裡的 impacted_files)的現在內容當上下文,而不是全部只給檔案內容。"""
+    """兩個輸入必須攤開寫清楚:(a) 範圍化 diff 看改了什麼,(b) 波及檔(不在改動集合
+    裡的 impacted_files)的檔名清單當留意清單——而不是把每個波及檔的全文都塞進去
+    (那正是 Item 1 修的病灶),也不是什麼提示都沒有。"""
     seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
     assert "git diff <trunk>...HEAD -- " in seg
-    assert "目前內容" in seg or "現在內容" in seg
+    assert "檔名清單" in seg
+
+
+def test_skill_review_scope_a_is_honest_about_no_reduction():
+    """<改動檔...> 本來就是 `git diff --name-only` 的完整輸出,對它做 `-- <這些檔案>`
+    限制沒有縮小效果,必然等於不加限制的整包 diff。文件不能假裝這塊有縮小範圍——必須
+    明講「沒有縮小效果」,否則讀者會誤以為 (a) 本身就達成了省 token 的目的。"""
+    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
+    assert "誠實說明" in seg
+    assert "沒有縮小效果" in seg
+
+
+def test_skill_review_scope_b_is_filename_list_not_full_content():
+    """波及範圍(blast radius)只該給檔名清單當留意清單,由 reviewer 自行用 Read 工具
+    按需打開;不該無條件把每個波及檔的全文預先塞進 prompt——後者正是舊版「比整包 diff
+    還多」的病灶(全部改動檔的 diff 之外,還無條件外加每個波及檔的全文)。"""
+    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
+    assert "檔名清單" in seg
+    assert "不要" in seg
+    assert "整份塞進 prompt" in seg
+
+
+def test_skill_review_scope_bounded_not_more_than_fallback():
+    """修完後的核心要求:總材料在常態(波及檔清單為空,常見於範圍收斂的 TDD 改動)下
+    與退回讀整包 diff **完全等量**,其餘情況只多一份可忽略的檔名清單——不能讓文件繼續
+    宣稱或暗示這條路徑比整包 diff 讀得更多(舊版的實際病灶),也不能空泛宣稱「一定比
+    整包 diff 少」這種在單一 reviewer 需審完所有改動檔前提下辦不到的事。"""
+    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
+    assert "完全等量" in seg
+    assert "不會更多" in seg
+
+
+def test_skill_no_longer_claims_context_savings_reduces_scope():
+    """`context_savings` 是 code-review-graph 工具自估的省 token 量,比較基準是「不用圖
+    時得掃整個 codebase 找關聯」,跟本文自己的退回基準(讀整包 diff)不是同一件事——
+    本文不該再拿它當「範圍比整包 diff 小」的佐證,只能如實描述它是工具自估、僅供參考
+    以外的用途已被移除。"""
+    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
+    assert "context_savings" in seg
+    assert "不是同一件事" in seg
 
 
 def test_skill_documents_impacted_files_path_normalization():
