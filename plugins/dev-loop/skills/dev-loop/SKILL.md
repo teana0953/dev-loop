@@ -66,7 +66,6 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
      3. 全部 done 後:`units-merge --file ... --repo .`。exit 1(衝突)→ 對 conflict 的 unit **退串行**:在最新短命分支 HEAD 重做該群 tasks;衝突 unit 在短命分支重做後 `unit-resolve --id <gid>`(標 merged + 清 worktree),再續 `units-merge`。
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
-   - **同步 code-review-graph(可選)**:完成後、送事件前,若工具在且專案有 `.code-review-graph/`,跑 `code-review-graph update -q --base <trunk>` 增量同步(平行 worktree 已 merge 回短命分支後跑一次即可)。工具或圖不在就跳過;失敗忽略,不影響 loop。
    - 完成後 `event --event apply_done`。
 6. **Hard gate**:`devloop gate --file .devloop/checkpoint.json [--cmd "<test-cmd>" ...] [--max-gate N]`。config 有 `gate_cmds` 時不帶 `--cmd` 直接跑;否則帶 `--cmd`(每個可為多字詞命令,如 `--cmd "pytest tests/"`)**並同時把命令寫進 config 的 `gate_cmds`** 供之後續跑零判斷。兩者皆無 → exit 2(不假綠)。
    - exit 0 → 階段已進到 qa。
@@ -79,7 +78,13 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
    `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
 8. **Review(code ‖ uiux 平行 legs)**:
-   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,先取本次改動檔清單(短命分支對 trunk 的 diff):
+   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,先跑
+
+   ```
+   code-review-graph update -q --base <trunk>
+   ```
+
+   把圖同步到最新(這一次呼叫同時涵蓋 apply 與此前每一輪 fix 的異動——`update` 只跑在這裡、只跑這一次,不在步驟 5 重複跑,單一事實來源;失敗忽略,不影響 loop)。接著取本次改動檔清單(短命分支對 trunk 的 diff):
 
    ```
    git diff <trunk>...HEAD --name-only
@@ -91,7 +96,13 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
    code-review-graph impact --files <上一步輸出的檔案...> --depth 2 --max-results 50
    ```
 
-   取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔),把 `impacted_files ∪ 改動檔` 當各 leg subagent 的閱讀範圍,取代讀整包 diff(JSON 另附 `context_savings` 省 token 估算,僅供參考)。**工具不在、圖不在或命令非 0 退出 → 退回現行做法:讀整包 diff**。code leg 與 uiux leg 同吃這份範圍。
+   取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔;**注意這些是絕對路徑**,而 `git diff --name-only` 印的是 repo-relative 路徑——用之前先把 `impacted_files` 正規化成 repo-relative,再跟改動檔比較/聯集,否則同一檔案兩種寫法會被當成兩個不同檔重複計)。
+
+   給各 leg subagent 的閱讀範圍是**兩塊,都要給**(合稱取代讀整包 diff,而不是只給檔名或只給內容):
+   - (a) 範圍化 diff,看「改了什麼」:`git diff <trunk>...HEAD -- <改動檔...>`
+   - (b) 波及範圍的上下文:`impacted_files` 中不在改動檔集合裡的那些檔案,讀它們**目前內容**(不是 diff——這些檔沒改,只是被波及,給現在的樣子當 blast-radius 參考)
+
+   JSON 另附 `context_savings` 省 token 估算,僅供參考。**退回現行做法(讀整包 diff)的觸發條件有二,任一成立即退回**:① 工具不在、圖不在或 `impact` 命令非 0 退出;② 命令雖 exit 0,但回傳的 `impacted_files` 與 `changed_nodes` 皆為空——這代表圖還不認得這批檔(圖 miss),不是「真的沒有波及檔」,不能悄悄把範圍縮成只有改動檔。code leg 與 uiux leg 同吃這份範圍。
 
    接著 `legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)

@@ -5,12 +5,21 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugins/dev-loop/bin/check-deps.sh"
 
 
-def _run(tmp_path, path_env):
-    """以受控 PATH 跑 check-deps.sh,回 (returncode, stdout)。"""
+def _run(tmp_path, path_env, config_dir=None, devloop=False):
+    """以受控 PATH(與可選 CLAUDE_CONFIG_DIR)跑 check-deps.sh,回 (returncode, stdout)。
+
+    devloop=True 會先在 tmp_path 造 .devloop/,模擬「已在用 dev-loop 的專案」
+    ——可選增益提示只該在這種專案裡出現。
+    """
+    if devloop:
+        (tmp_path / ".devloop").mkdir(parents=True, exist_ok=True)
+    env = {"PATH": path_env}
+    if config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=str(tmp_path),
-        env={"PATH": path_env},
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -27,10 +36,14 @@ def _stub(dir_path, name):
 
 
 def test_optional_tools_missing_reports_but_exits_zero(tmp_path):
+    """caveman 未裝(乾淨的 CLAUDE_CONFIG_DIR,無 active-flag、無 marketplace 目錄)、
+    code-review-graph 不在 PATH,且專案有 .devloop/ → 兩者都該被列出。"""
     binp = tmp_path / "bin"
     for name in ("python3", "git", "openspec"):
         _stub(binp, name)
-    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin")
+    empty_config = tmp_path / "claude-config-empty"
+    empty_config.mkdir()
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=empty_config, devloop=True)
     assert code == 0
     assert "dev-loop 可選增益未安裝:" in out
     assert "caveman" in out
@@ -38,21 +51,69 @@ def test_optional_tools_missing_reports_but_exits_zero(tmp_path):
     assert "dev-loop 前置缺少:" not in out
 
 
-def test_optional_tools_present_no_optional_line(tmp_path):
+def test_optional_tools_present_no_optional_line_active_flag(tmp_path):
+    """caveman 的真實安裝流程寫的是 active-flag 檔(不是 PATH 執行檔),
+    code-review-graph 則確實裝到 PATH 上。兩者都在時不該印可選增益提示。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "caveman", "code-review-graph"):
+    for name in ("python3", "git", "openspec", "code-review-graph"):
         _stub(binp, name)
-    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin")
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".caveman-active").write_text("", encoding="utf-8")
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=config_dir, devloop=True)
     assert code == 0
     assert "dev-loop 可選增益未安裝:" not in out
 
 
+def test_optional_tools_present_via_marketplace_dir(tmp_path):
+    """caveman 有時只留下 marketplace 目錄、沒有 active-flag,仍該算已裝。"""
+    binp = tmp_path / "bin"
+    for name in ("python3", "git", "openspec", "code-review-graph"):
+        _stub(binp, name)
+    config_dir = tmp_path / "claude-config"
+    (config_dir / "plugins/marketplaces/caveman").mkdir(parents=True)
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=config_dir, devloop=True)
+    assert code == 0
+    assert "dev-loop 可選增益未安裝:" not in out
+
+
+def test_caveman_on_path_alone_is_not_considered_installed(tmp_path):
+    """caveman 是 Claude Code plugin,裝完不會留執行檔在 PATH 上——就算 PATH 上
+    剛好有個叫 caveman 的東西,沒有 active-flag/marketplace 目錄仍該視為未裝。
+    這條鎖的是「偵測真正的安裝痕跡」這個需求,不是鎖 `command -v` 這個舊實作。"""
+    binp = tmp_path / "bin"
+    for name in ("python3", "git", "openspec", "caveman", "code-review-graph"):
+        _stub(binp, name)
+    empty_config = tmp_path / "claude-config-empty"
+    empty_config.mkdir()
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=empty_config, devloop=True)
+    assert code == 0
+    assert "dev-loop 可選增益未安裝:" in out
+    assert "caveman" in out
+
+
 def test_hard_prereq_missing_still_reported_separately(tmp_path):
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "caveman", "code-review-graph"):
+    for name in ("python3", "git", "code-review-graph"):
         _stub(binp, name)
-    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin")
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".caveman-active").write_text("", encoding="utf-8")
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=config_dir, devloop=True)
     assert code == 0
     assert "dev-loop 前置缺少:" in out
     assert "openspec" in out
+    assert "dev-loop 可選增益未安裝:" not in out
+
+
+def test_optional_line_suppressed_outside_devloop_project(tmp_path):
+    """沒有 .devloop/ 的專案(還沒在用 dev-loop)不該被灌可選增益噪音,
+    即使兩個可選工具都真的沒裝——SessionStart hook 每個專案每個 session 都會跑。"""
+    binp = tmp_path / "bin"
+    for name in ("python3", "git", "openspec"):
+        _stub(binp, name)
+    empty_config = tmp_path / "claude-config-empty"
+    empty_config.mkdir()
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=empty_config, devloop=False)
+    assert code == 0
     assert "dev-loop 可選增益未安裝:" not in out

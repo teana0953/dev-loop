@@ -23,7 +23,7 @@
    cd /your/project
    git init                       # 若還不是 git repo
    openspec init --tools claude   # 初始化 OpenSpec
-   echo '.code-review-graph/' >> .gitignore   # 有裝 code-review-graph 才需要
+   grep -qxF '.code-review-graph/' .gitignore 2>/dev/null || echo '.code-review-graph/' >> .gitignore   # 有裝 code-review-graph 才需要,重跑不會重複加
    ```
 
 3. **起一條 loop**:在該專案的 Claude Code 裡打
