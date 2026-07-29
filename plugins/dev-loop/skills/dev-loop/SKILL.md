@@ -42,6 +42,7 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
 無論是第一次啟動還是被觸發器續跑,每回合遵循同一套邏輯:
 
 1. **讀 phase**:有 checkpoint 就跑 `devloop status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers`、`auto_approve` 或 `finish` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動;收尾策略 merge/pr/ask)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
+   **順手備妥 code-review-graph(可選)**:若 `command -v code-review-graph` 成功且專案無 `.code-review-graph/`,跑 `code-review-graph build -q` 建圖(供步驟 8 review 選檔用);已有圖或工具未安裝就跳過。此步驟純增益,失敗一律忽略、不影響 loop 推進,也不寫 checkpoint。
 2. **推進到卡點**:照 `next:` hint(或流程步驟)一路做到下一個卡點——✋ 人工批准點,或本回合 token/時間用盡。
 3. **未到終態即本回合結束**:若 phase 還不是 `done` 或停等人工的 `escalated`,本回合到此為止;token/配額恢復後由引擎自動 arm 的 detached watcher 冷啟動續跑(見「Token 用罄續跑」),本 skill 不需自行排程。
 
@@ -65,6 +66,7 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
      3. 全部 done 後:`units-merge --file ... --repo .`。exit 1(衝突)→ 對 conflict 的 unit **退串行**:在最新短命分支 HEAD 重做該群 tasks;衝突 unit 在短命分支重做後 `unit-resolve --id <gid>`(標 merged + 清 worktree),再續 `units-merge`。
      4. `units-cleanup --file ... --repo . --wt-root .devloop/wt` 清掉 worktree。
    - **續跑**:reset 後讀 `units-status`,只對 `pending:` 清單的 unit 重新 dispatch subagent。
+   - **同步 code-review-graph(可選)**:完成後、送事件前,若工具在且專案有 `.code-review-graph/`,跑 `code-review-graph update -q --base <trunk>` 增量同步(平行 worktree 已 merge 回短命分支後跑一次即可)。工具或圖不在就跳過;失敗忽略,不影響 loop。
    - 完成後 `event --event apply_done`。
 6. **Hard gate**:`devloop gate --file .devloop/checkpoint.json [--cmd "<test-cmd>" ...] [--max-gate N]`。config 有 `gate_cmds` 時不帶 `--cmd` 直接跑;否則帶 `--cmd`(每個可為多字詞命令,如 `--cmd "pytest tests/"`)**並同時把命令寫進 config 的 `gate_cmds`** 供之後續跑零判斷。兩者皆無 → exit 2(不假綠)。
    - exit 0 → 階段已進到 qa。
@@ -76,7 +78,16 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
    - **full** → 照現行:subagent 依 proposal 驗收標準跑 app/CLI 驗行為,產報告(level=behavior)。
    `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
-8. **Review(code ‖ uiux 平行 legs)**:`legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
+8. **Review(code ‖ uiux 平行 legs)**:
+   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,跑
+
+   ```
+   code-review-graph impact --files <本次改動檔...> --depth 2 --max-results 50
+   ```
+
+   取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔),把 `impacted_files ∪ 改動檔` 當各 leg subagent 的閱讀範圍,取代讀整包 diff(JSON 另附 `context_savings` 省 token 估算,僅供參考)。**工具不在、圖不在或命令非 0 退出 → 退回現行做法:讀整包 diff**。code leg 與 uiux leg 同吃這份範圍。
+
+   接著 `legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)
    - `review_blocking_code` → fix(步驟 9)
    - `review_blocking_proposal` → 逃生門回步驟 2(必要時步驟 1)
