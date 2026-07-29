@@ -3,7 +3,7 @@
 missing=()
 command -v python3  >/dev/null 2>&1 || missing+=("python3")
 command -v git      >/dev/null 2>&1 || missing+=("git")
-command -v openspec >/dev/null 2>&1 || missing+=("openspec(npm i -g openspec)")
+command -v openspec >/dev/null 2>&1 || missing+=("openspec(npm i -g @fission-ai/openspec)")
 if [ ${#missing[@]} -gt 0 ]; then
   printf 'dev-loop 前置缺少:%s\n' "${missing[*]}"
 fi

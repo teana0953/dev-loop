@@ -58,7 +58,7 @@
 
 安裝與每專案設定的步驟見上方 Quickstart;本節只補細節。
 
-前置:`python3`(3.10+)、`git`、`openspec`(`npm i -g openspec`)。
+前置:`python3`(3.10+)、`git`、`openspec`(`npm i -g @fission-ai/openspec`)。
 
 裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
 
