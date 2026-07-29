@@ -6,6 +6,9 @@ testpaths = ["tests"]
 target-version = "py310"
 
 [tool.ruff.lint]
+# 顯式鎖定規則集為 ruff 歷來預設(E4/E7/E9 + F),與專案既有契約一致;
+# 不隨 ruff 上游改預設(如 0.16 起噴 BLE/S/UP/I/PLW)而漂移。
+select = ["E4", "E7", "E9", "F"]
 # E402(測試檔的區段式延後 import)、E702(測試 fixture 的緊湊分號風格)、
 # E741(legs/units 短迴圈變數 l)為既有刻意風格,不視為問題。
 ignore = ["E402", "E702", "E741"]
