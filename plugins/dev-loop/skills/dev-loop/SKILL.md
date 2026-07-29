@@ -79,10 +79,16 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
    `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
 8. **Review(code ‖ uiux 平行 legs)**:
-   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,跑
+   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,先取本次改動檔清單(短命分支對 trunk 的 diff):
 
    ```
-   code-review-graph impact --files <本次改動檔...> --depth 2 --max-results 50
+   git diff <trunk>...HEAD --name-only
+   ```
+
+   再用上一步輸出的檔案清單跑
+
+   ```
+   code-review-graph impact --files <上一步輸出的檔案...> --depth 2 --max-results 50
    ```
 
    取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔),把 `impacted_files ∪ 改動檔` 當各 leg subagent 的閱讀範圍,取代讀整包 diff(JSON 另附 `context_savings` 省 token 估算,僅供參考)。**工具不在、圖不在或命令非 0 退出 → 退回現行做法:讀整包 diff**。code leg 與 uiux leg 同吃這份範圍。
