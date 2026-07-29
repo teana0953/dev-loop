@@ -91,3 +91,14 @@ code-review-graph impact --files <changed-file...> --depth 2 --max-results N
 - 不接 CRG embedding / 語意搜尋 / wiki / community。
 - 不寫 caveman 編排(它是 session hook,裝了自動作用)。
 - 不改 devloop 引擎 CLI(CRG 同步是編排層副作用)。
+
+---
+
+## 實作後更正(2026-07-29,實作與 review 之後補記)
+
+本文以上敘事是 point-in-time 的設計當下記錄,保留原樣。但有兩處前提在實作與 whole-branch review 期間被實測推翻,**以 SKILL.md 與測試為準**,勿再照本文的說法實作:
+
+1. **「review 選檔省 token」不成立。** CRG 的省 token 場景是「不知道要讀哪些檔,得掃整個 codebase」;dev-loop 的 review 本來就只讀 diff,已是縮減過的範圍,而每個改動檔都必須審、無從再縮。工具自報的 `context_savings` 以「掃整個 codebase」為基準,與本專案的退回基準(讀整包 diff)不是同一件事,**不可**拿來宣稱範圍變小。CRG 在本專案的實際價值是**審查品質增益**:給 reviewer 一份波及範圍(caller/dependent/test)線索,看得到依賴端有沒有被改壞。最終做法是只交**檔名清單**、由 reviewer 按需自行 Read,而非預先塞入每個波及檔全文(後者會讓總量比整包 diff 還多)。
+2. **`command -v caveman` 偵測不到 caveman。** caveman 不在 PATH 留 binary(文件教的安裝方式結尾是 `exec npx -y github:JuliusBrussee/caveman`)。正確偵測方式是查安裝痕跡:`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.caveman-active` 或 `.../plugins/marketplaces/caveman/`。另外,該提示必須包在 `[ -d .devloop ]` guard 內——`check-deps.sh` 是 SessionStart hook,無 guard 會在每個專案每次 session 噴訊息。
+
+另有兩處實作期修正:CRG 的 `update` 只在 **review 步驟開頭**跑一次(涵蓋 apply 與其後每輪 fix;原設計放在 apply 末,會讓 fix 輪的改動永遠進不了圖),以及降級條件須含「exit 0 但 `impacted_files` 與 `changed_nodes` 皆空」的圖 miss 情形(只看 exit code 會讓範圍靜默塌縮)。
