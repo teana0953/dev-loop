@@ -5,3 +5,5 @@ __pycache__/
 .claude/worktrees/
 .superpowers/
 .code-review-graph/
+plugins/dev-loop/dist/
+plugins/dev-loop/node_modules/
