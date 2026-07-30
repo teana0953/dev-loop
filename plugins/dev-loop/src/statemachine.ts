@@ -121,16 +121,20 @@ export function nextHint(
       return `next: legs pending: ${pendingLegs.join(",")} -> devloop leg-done --file ${checkpointPath} --kind <kind> --report <report.json>`;
     }
   }
-  if (phase in TERMINAL_HINTS) {
+  // Use Object.hasOwn (not `in`/`phase in TABLE`) so lookups can never match
+  // inherited Object.prototype keys (e.g. "constructor", "toString",
+  // "valueOf"). Those must throw, exactly as Python's dict-membership
+  // check (`phase in _TABLE`) does for any key not actually present.
+  if (Object.hasOwn(TERMINAL_HINTS, phase)) {
     return TERMINAL_HINTS[phase];
   }
-  if (phase in DETERMINISTIC_HINTS) {
+  if (Object.hasOwn(DETERMINISTIC_HINTS, phase)) {
     return DETERMINISTIC_HINTS[phase](checkpointPath);
   }
-  if (phase in JUDGMENT_HINTS) {
+  if (Object.hasOwn(JUDGMENT_HINTS, phase)) {
     return JUDGMENT_HINTS[phase];
   }
-  throw new Error(`no next hint for phase ${phase}`);
+  throw new Error(`no next hint for phase ${phase} (KeyError)`);
 }
 
 /**
