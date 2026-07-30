@@ -42,6 +42,97 @@ export const DEFAULT_MAX_ITERATIONS = 3;
 
 export class InvalidTransition extends Error {}
 
+// phase → next hint 產生器(規格 cli-status)。確定性步驟給命令骨架、
+// 判斷型步驟給 dispatch 說明、終態明確收束。
+const DETERMINISTIC_HINTS: Record<string, (f: string) => string> = {
+  proposal_review: (f) => `next: devloop proposal-review --file ${f} --report <pr.json>`,
+  gate: (f) => `next: devloop gate --file ${f} --cmd "<test-cmd>" [--cmd "<lint-cmd>"]`,
+  qa: (f) => `next: devloop qa --file ${f} --report <qa.json>`,
+  review: (f) => `next: devloop review --file ${f} --from-legs`,
+  merge: (f) =>
+    `next: devloop finish --file ${f} --config <config.json> --meta <meta.json> --followup <followup.md>`,
+};
+
+const JUDGMENT_HINTS: Record<string, string> = {
+  brainstorm: "next: dispatch brainstorming(產出設計文件,批准後 propose)",
+  propose: "next: dispatch propose(建立 OpenSpec change,完成後 event --event propose_done)",
+  apply: "next: dispatch apply(TDD 實作 tasks,完成後 event --event apply_done)",
+  fix: "next: dispatch fix(處理 blocking 項,完成後 event --event fix_done)",
+};
+
+const TERMINAL_HINTS: Record<string, string> = {
+  done: "next: (done)",
+  escalated:
+    "next: (escalated)人工升級後續跑:event --event human_resume_propose 或 human_resume_fix",
+};
+
+export interface HintOpts {
+  units?: Array<{ id: string; status?: string }>;
+  reviewLegs?: Array<{ kind: string; status?: string }>;
+  gateCmds?: string[] | null;
+  finishMode?: string | null;
+  flowProfile?: string | null;
+  needsUiux?: boolean | null;
+}
+
+/**
+ * 依 phase(與 units/review_legs pending 狀態)給下一步 hint,恆以 `next: ` 開頭。
+ *
+ * gate_cmds 非空(config 已存 gate 命令)時,gate hint 給完整可執行命令
+ * (引擎會 fallback 到 config),而非 `<test-cmd>` 骨架。
+ *
+ * finish_mode 有值時(checkpoint 已記錄 merge/pr),teardown hint 給完整
+ * 可執行命令;無值時給 `<merge|pr>` 骨架待人工/引擎補上。
+ *
+ * qa 階段依流程軸分岔:flow_profile=light 且非 uiux → 裁剪路徑 hint qa_skip
+ * (UX 線不受裁剪:uiux 時照 qa 骨架,QA 只驗 UX 驗收)。
+ */
+export function nextHint(
+  phase: string,
+  checkpointPath: string,
+  opts: HintOpts = {},
+): string {
+  const { units, reviewLegs, gateCmds, finishMode, flowProfile, needsUiux } = opts;
+  if (phase === "qa" && flowProfile === "light" && !needsUiux) {
+    return `next: devloop event --file ${checkpointPath} --event qa_skip`;
+  }
+  if (phase === "gate" && gateCmds && gateCmds.length) {
+    return `next: devloop gate --file ${checkpointPath}`;
+  }
+  if (phase === "teardown") {
+    const mode = finishMode || "<merge|pr>";
+    return `next: devloop teardown --file ${checkpointPath} --repo . --mode ${mode}`;
+  }
+  if ((phase === "apply" || phase === "fix") && units) {
+    const pending = units
+      .filter((u) => u.status === "pending" || u.status === "in_progress")
+      .map((u) => u.id);
+    if (pending.length) {
+      return `next: units pending: ${pending.join(",")} -> devloop units-status --file ${checkpointPath}`;
+    }
+  }
+  // legs 只在 review 階段 legs-init(SKILL 步驟 8),qa 階段恆無 legs,
+  // 故 pending-legs 提示僅判 review——這是刻意的,非漏了 qa。
+  if (phase === "review" && reviewLegs) {
+    const pendingLegs = reviewLegs
+      .filter((l) => l.status !== "collected")
+      .map((l) => l.kind);
+    if (pendingLegs.length) {
+      return `next: legs pending: ${pendingLegs.join(",")} -> devloop leg-done --file ${checkpointPath} --kind <kind> --report <report.json>`;
+    }
+  }
+  if (phase in TERMINAL_HINTS) {
+    return TERMINAL_HINTS[phase];
+  }
+  if (phase in DETERMINISTIC_HINTS) {
+    return DETERMINISTIC_HINTS[phase](checkpointPath);
+  }
+  if (phase in JUDGMENT_HINTS) {
+    return JUDGMENT_HINTS[phase];
+  }
+  throw new Error(`no next hint for phase ${phase}`);
+}
+
 /**
  * Pure state transition function. Returns [newPhase, newIteration].
  *
