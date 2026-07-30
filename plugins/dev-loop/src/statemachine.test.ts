@@ -19,6 +19,9 @@ describe("transition", () => {
   it("gate_pass beyond max iterations escalates", () => {
     expect(transition("gate", 3, GATE_PASS, 3)).toEqual(["escalated", 4]);
   });
+  it("gate_pass reaching exactly max iterations stays in qa (escalate only when exceeding, not reaching)", () => {
+    expect(transition("gate", 2, GATE_PASS, 3)).toEqual(["qa", 3]);
+  });
   it("gate_fail goes to fix without incrementing", () => {
     expect(transition("gate", 1, GATE_FAIL)).toEqual(["fix", 1]);
   });
