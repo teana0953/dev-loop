@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeCheckpoint, saveCheckpoint, loadCheckpoint } from "./checkpoint.js";
@@ -62,5 +62,38 @@ describe("checkpoint", () => {
     expect(loaded.finish_mode).toBeNull();
     expect(loaded.flow_profile).toBe("full");
     expect(loaded.needs_uiux).toBe(false);
+  });
+
+  it("emits exactly the 15-key schema Python's Checkpoint dataclass expects", () => {
+    // Authoritative key list transcribed from
+    // plugins/dev-loop/devloop/checkpoint.py (the @dataclass field order),
+    // NOT from checkpoint.ts -- this must assert the TS output against the
+    // Python contract, not against itself. If Python rejects an emitted
+    // checkpoint with Checkpoint(**data), it means this list (or the
+    // Python dataclass) changed and this test must be updated deliberately.
+    const PYTHON_CHECKPOINT_KEYS = [
+      "phase",
+      "change_id",
+      "branch",
+      "iteration",
+      "last_artifact",
+      "non_blocking",
+      "updated_at",
+      "resume_exec",
+      "units",
+      "review_legs",
+      "propose_attempts",
+      "gate_failures",
+      "finish_mode",
+      "flow_profile",
+      "needs_uiux",
+    ];
+    const p = join(tmp(), "checkpoint.json");
+    const cp = makeCheckpoint({ phase: "apply", change_id: "c", branch: "b" });
+    saveCheckpoint(cp, p);
+    const raw = JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
+    const keys = Object.keys(raw).sort();
+    expect(keys).toEqual([...PYTHON_CHECKPOINT_KEYS].sort());
+    expect(keys.length).toBe(15);
   });
 });

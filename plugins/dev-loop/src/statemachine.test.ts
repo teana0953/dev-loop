@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  transition, InvalidTransition,
+  transition, InvalidTransition, PHASES,
   APPLY_DONE, GATE_PASS, GATE_FAIL, QA_PASS, QA_FAIL, QA_SKIP,
   REVIEW_NO_BLOCKING, REVIEW_BLOCKING_CODE, REVIEW_BLOCKING_PROPOSAL,
   FIX_DONE, FINISH_DONE, PROPOSE_DONE, TEARDOWN_DONE,
@@ -8,6 +8,44 @@ import {
   PROPOSE_RETRY_EXCEEDED, GATE_RETRY_EXCEEDED,
   HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX,
 } from "./statemachine.js";
+
+// All events, derived from the exported event constants (not hand-typed
+// string literals) so this list can never drift from statemachine.ts.
+const ALL_EVENTS = [
+  APPLY_DONE, GATE_PASS, GATE_FAIL, QA_PASS, QA_FAIL, QA_SKIP,
+  REVIEW_NO_BLOCKING, REVIEW_BLOCKING_CODE, REVIEW_BLOCKING_PROPOSAL,
+  FIX_DONE, FINISH_DONE, PROPOSE_DONE, TEARDOWN_DONE,
+  PROPOSE_CLEAN, PROPOSE_BLOCKING_PROPOSAL, PROPOSE_BLOCKING_DESIGN,
+  PROPOSE_RETRY_EXCEEDED, GATE_RETRY_EXCEEDED,
+  HUMAN_RESUME_PROPOSE, HUMAN_RESUME_FIX,
+];
+
+// The frozen valid (phase, event) edge table -- the 20 valid transitions,
+// written out literally so a change to this table shows up as a reviewable
+// diff (e.g. when M3 merges gate+qa into a single eval phase).
+const VALID: Array<[string, string]> = [
+  ["proposal_review", PROPOSE_CLEAN],
+  ["proposal_review", PROPOSE_BLOCKING_PROPOSAL],
+  ["proposal_review", PROPOSE_BLOCKING_DESIGN],
+  ["apply", APPLY_DONE],
+  ["gate", GATE_PASS],
+  ["qa", QA_PASS],
+  ["qa", QA_SKIP],
+  ["qa", QA_FAIL],
+  ["gate", GATE_FAIL],
+  ["review", REVIEW_NO_BLOCKING],
+  ["review", REVIEW_BLOCKING_CODE],
+  ["review", REVIEW_BLOCKING_PROPOSAL],
+  ["fix", FIX_DONE],
+  ["merge", FINISH_DONE],
+  ["teardown", TEARDOWN_DONE],
+  ["propose", PROPOSE_DONE],
+  ["proposal_review", PROPOSE_RETRY_EXCEEDED],
+  ["gate", GATE_RETRY_EXCEEDED],
+  ["escalated", HUMAN_RESUME_PROPOSE],
+  ["escalated", HUMAN_RESUME_FIX],
+];
+const validKeys = new Set(VALID.map(([p, e]) => `${p}|${e}`));
 
 describe("transition", () => {
   it("apply_done goes to gate", () => {
@@ -83,5 +121,15 @@ describe("transition", () => {
   });
   it("invalid transition throws", () => {
     expect(() => transition("apply", 0, GATE_PASS)).toThrow(InvalidTransition);
+  });
+
+  it("every (phase,event) pair outside the frozen edge table throws", () => {
+    expect(VALID.length).toBe(20);
+    for (const p of PHASES) {
+      for (const e of ALL_EVENTS) {
+        if (validKeys.has(`${p}|${e}`)) continue;
+        expect(() => transition(p, 0, e), `${p}/${e}`).toThrow(InvalidTransition);
+      }
+    }
   });
 });
