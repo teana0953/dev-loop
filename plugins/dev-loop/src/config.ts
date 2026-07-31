@@ -85,7 +85,19 @@ export function loadConfig(path: string): Config {
   if (!existsSync(path)) {
     return defaultConfig();
   }
-  const data = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+  // JSON.parse's return type is `any`, so a non-object root (array, string,
+  // number, null) would otherwise pass the `as Record<string, unknown>` cast
+  // silently and every field below would fall back to its default — making a
+  // truncated/corrupt config indistinguishable from "no config file", with
+  // zero diagnostic. That is exactly the failure mode the load-time
+  // validation below exists to prevent, so the root shape must be checked
+  // first (equivalent to Python's data.get(...) raising AttributeError on a
+  // non-dict root).
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`config must be a JSON object, got ${JSON.stringify(parsed)}`);
+  }
+  const data = parsed as Record<string, unknown>;
   const modelProfile = (data.model_profile as string | null | undefined) ?? null;
   const models = (data.models as Record<string, string> | undefined) ?? {};
   // 設定壞掉要在 loop 一開始就炸,不是跑到 apply dispatch 才發現
@@ -94,6 +106,10 @@ export function loadConfig(path: string): Config {
     finish: (data.finish as string | null | undefined) ?? null,
     auto_arm: Boolean(data.auto_arm ?? true),
     gate_cmds: (data.gate_cmds as string[] | undefined) ?? [],
+    // superpowers: a non-boolean JSON value (e.g. "yes") passes through
+    // unchanged at runtime despite the `boolean | null` type — intentional
+    // Python parity (原始碼註解:非布林值原樣保留,消費端視為未設). Do not
+    // "fix" this into a Boolean() coercion; that would break parity.
     superpowers: (data.superpowers as boolean | null | undefined) ?? null,
     auto_approve: data.auto_approve === true,
     model_profile: modelProfile,

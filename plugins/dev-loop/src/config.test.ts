@@ -40,6 +40,13 @@ describe("loadConfig", () => {
   it("throws on an invalid model_profile at load time", () => {
     expect(() => loadConfig(tmpFile({ model_profile: "cheap" }))).toThrow();
   });
+
+  it("throws on a malformed JSON root instead of silently discarding it", () => {
+    expect(() => loadConfig(tmpFile([1, 2, 3]))).toThrow();
+    expect(() => loadConfig(tmpFile("hello"))).toThrow();
+    expect(() => loadConfig(tmpFile(42))).toThrow();
+    expect(() => loadConfig(tmpFile(null))).toThrow();
+  });
 });
 
 describe("validateModelConfig", () => {
