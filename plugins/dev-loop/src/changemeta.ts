@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readJsonObject, pyGet } from "./jsonio.js";
 
 export interface ChangeMeta {
   parallel_groups: unknown[];
@@ -23,15 +24,13 @@ export function loadChangeMeta(path: string): ChangeMeta {
   if (!existsSync(path)) {
     return defaultChangeMeta();
   }
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-  // Match Python's data.get(...) raising AttributeError on a non-dict root
-  // (array/string/number/null): a truncated/corrupt file must not silently
-  // fall back to all-defaults.
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`change meta must be a JSON object, got ${JSON.stringify(parsed)}`);
-  }
-  const data = parsed as Record<string, unknown>;
-  const flowProfile = (data.flow_profile as string | null | undefined) ?? null;
+  const data = readJsonObject(path, "change meta");
+  // pyGet, not `??`: Python's data.get(key, default) substitutes default
+  // only when the key is absent, not on an explicit JSON null. flow_profile
+  // and finish both default to None in Python, so this makes no observable
+  // difference for them, but pyGet is used uniformly (see F1 in config.ts
+  // for the fields where it does matter).
+  const flowProfile = pyGet(data, "flow_profile", null) as string | null;
   // 壞設定在 start 就炸(同 config 的 model 驗證精神),不是跑到 qa 才發現
   if (flowProfile !== null && !(VALID_FLOW_PROFILES as readonly string[]).includes(flowProfile)) {
     throw new Error(`flow_profile=${JSON.stringify(flowProfile)} (valid: ${VALID_FLOW_PROFILES.join("/")})`);
@@ -57,8 +56,11 @@ export function loadChangeMeta(path: string): ChangeMeta {
     // parity (data.get("needs_uiux", False) returns the raw value with no
     // coercion). Do not "fix" this into a Boolean() coercion; that would
     // break parity (e.g. `[]` is falsy in Python but Boolean([]) is true).
-    needs_uiux: (data.needs_uiux ?? false) as boolean,
-    finish: (data.finish as string | null | undefined) ?? null,
+    // pyGet (not `??`) also matters here specifically: explicit
+    // `needs_uiux: null` is a *present* key, so Python's .get returns None,
+    // not False -- `?? false` would wrongly turn that into false.
+    needs_uiux: pyGet(data, "needs_uiux", false) as boolean,
+    finish: pyGet(data, "finish", null) as string | null,
     flow_profile: flowProfile,
   };
 }

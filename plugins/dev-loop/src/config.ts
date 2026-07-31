@@ -1,9 +1,14 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readJsonObject, pyGet } from "./jsonio.js";
 
 export interface Config {
   finish: string | null;
   auto_arm: boolean;
-  gate_cmds: string[];
+  // string[] in the common case, but an explicit JSON `null` for this key
+  // must flow through unchanged (Python: data.get("gate_cmds", []) returns
+  // the present value, null included) so that validateGateCmds can reject
+  // it downstream instead of the loader silently defaulting to [].
+  gate_cmds: string[] | null;
   // superpowers 由編排 skill 消費(引擎不分支):true/false/null(未設,
   // SKILL 第一次啟動時問使用者再寫回)。非布林值原樣保留,消費端視為未設。
   superpowers: boolean | null;
@@ -85,35 +90,43 @@ export function loadConfig(path: string): Config {
   if (!existsSync(path)) {
     return defaultConfig();
   }
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-  // JSON.parse's return type is `any`, so a non-object root (array, string,
-  // number, null) would otherwise pass the `as Record<string, unknown>` cast
-  // silently and every field below would fall back to its default — making a
-  // truncated/corrupt config indistinguishable from "no config file", with
-  // zero diagnostic. That is exactly the failure mode the load-time
-  // validation below exists to prevent, so the root shape must be checked
-  // first (equivalent to Python's data.get(...) raising AttributeError on a
-  // non-dict root).
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`config must be a JSON object, got ${JSON.stringify(parsed)}`);
-  }
-  const data = parsed as Record<string, unknown>;
-  const modelProfile = (data.model_profile as string | null | undefined) ?? null;
-  const models = (data.models as Record<string, string> | undefined) ?? {};
+  const data = readJsonObject(path, "config");
+  // pyGet, not `?? default`: Python's data.get(key, default) substitutes
+  // default only when the key is ABSENT. `??` also substitutes on explicit
+  // JSON `null`, which is wrong for every field below whose Python default
+  // is non-null (auto_arm=True, models={}) — see F1. Fields whose Python
+  // default is already None (finish, superpowers, model_profile) are
+  // unaffected either way, but pyGet is used uniformly so the loader
+  // doesn't silently regress if a default ever changes.
+  const modelProfile = pyGet(data, "model_profile", null) as string | null;
+  const models = pyGet<unknown>(data, "models", {});
   // 設定壞掉要在 loop 一開始就炸,不是跑到 apply dispatch 才發現
+  // (explicit `models: null` must reach here and throw, matching Python's
+  // isinstance(None, dict) check inside validate_model_config — it must
+  // NOT be silently defaulted to {} first.)
   validateModelConfig(modelProfile, models);
   return {
-    finish: (data.finish as string | null | undefined) ?? null,
-    auto_arm: Boolean(data.auto_arm ?? true),
-    gate_cmds: (data.gate_cmds as string[] | undefined) ?? [],
+    finish: pyGet(data, "finish", null) as string | null,
+    // Python: bool(data.get("auto_arm", True)). Explicit `auto_arm: null`
+    // is a *present* key, so Python's .get returns None (not True), and
+    // bool(None) is False — the same value must come out here.
+    auto_arm: Boolean(pyGet(data, "auto_arm", true)),
+    // Explicit `gate_cmds: null` must survive as null (Python's .get
+    // returns the present None, not []), for validateGateCmds to reject.
+    gate_cmds: pyGet(data, "gate_cmds", [] as string[]),
     // superpowers: a non-boolean JSON value (e.g. "yes") passes through
     // unchanged at runtime despite the `boolean | null` type — intentional
     // Python parity (原始碼註解:非布林值原樣保留,消費端視為未設). Do not
     // "fix" this into a Boolean() coercion; that would break parity.
-    superpowers: (data.superpowers as boolean | null | undefined) ?? null,
-    auto_approve: data.auto_approve === true,
+    superpowers: pyGet(data, "superpowers", null) as boolean | null,
+    // Python: (data.get("auto_approve", False) is True). Present-null and
+    // absent both yield None/False respectively, both !== True -> False;
+    // pyGet + strict === true reproduces this without special-casing.
+    auto_approve: pyGet<unknown>(data, "auto_approve", false) === true,
     model_profile: modelProfile,
-    models,
+    // Past validateModelConfig, models is guaranteed to be a non-null,
+    // non-array object (or it would have thrown above).
+    models: models as Record<string, string>,
   };
 }
 

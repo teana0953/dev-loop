@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "pretest": "npm run build",
+    "pretest": "npm run build && npm run bundle",
     "test": "vitest run",
     "lint": "eslint src",
     "bundle": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/cli.js && chmod +x dist/cli.js"

@@ -47,6 +47,62 @@ describe("loadConfig", () => {
     expect(() => loadConfig(tmpFile(42))).toThrow();
     expect(() => loadConfig(tmpFile(null))).toThrow();
   });
+
+  describe("explicit null vs. absent key (F1 — Python dict.get parity)", () => {
+    // Python's data.get(k, default) substitutes `default` only when `k` is
+    // ABSENT; an explicit JSON `null` is a present key, so .get returns
+    // None, not the default. These pin down that distinction per field,
+    // matching plugins/dev-loop/devloop/config.py's load_config exactly.
+
+    it("auto_arm: null is a present key -> bool(None) is False (Python parity)", () => {
+      // PY: bool(data.get("auto_arm", True)) with auto_arm=None -> False.
+      expect(loadConfig(tmpFile({ auto_arm: null })).auto_arm).toBe(false);
+    });
+
+    it("auto_arm: absent key -> default True", () => {
+      expect(loadConfig(tmpFile({})).auto_arm).toBe(true);
+    });
+
+    it("gate_cmds: null is preserved (not defaulted to []) for validateGateCmds to reject", () => {
+      // PY: data.get("gate_cmds", []) with gate_cmds=None -> None, which
+      // later fails validate_gate_cmds's isinstance(list) check.
+      expect(loadConfig(tmpFile({ gate_cmds: null })).gate_cmds).toBeNull();
+    });
+
+    it("gate_cmds: absent key -> default []", () => {
+      expect(loadConfig(tmpFile({})).gate_cmds).toEqual([]);
+    });
+
+    it("models: null reaches validateModelConfig and throws, matching Python's ValueError", () => {
+      // PY: data.get("models", {}) with models=None -> None; then
+      // isinstance(None, dict) is False -> validate_model_config raises.
+      expect(() => loadConfig(tmpFile({ models: null }))).toThrow();
+    });
+
+    it("models: absent key -> default {}", () => {
+      expect(loadConfig(tmpFile({}))).toMatchObject({ models: {} });
+    });
+
+    it("finish: null and absent both resolve to null (Python default is already None)", () => {
+      expect(loadConfig(tmpFile({ finish: null })).finish).toBeNull();
+      expect(loadConfig(tmpFile({})).finish).toBeNull();
+    });
+
+    it("superpowers: null and absent both resolve to null (Python default is already None)", () => {
+      expect(loadConfig(tmpFile({ superpowers: null })).superpowers).toBeNull();
+      expect(loadConfig(tmpFile({})).superpowers).toBeNull();
+    });
+
+    it("model_profile: null and absent both resolve to null (Python default is already None)", () => {
+      expect(loadConfig(tmpFile({ model_profile: null })).model_profile).toBeNull();
+      expect(loadConfig(tmpFile({})).model_profile).toBeNull();
+    });
+
+    it("auto_approve: null and absent both resolve to false (neither `is True`)", () => {
+      expect(loadConfig(tmpFile({ auto_approve: null })).auto_approve).toBe(false);
+      expect(loadConfig(tmpFile({})).auto_approve).toBe(false);
+    });
+  });
 });
 
 describe("validateModelConfig", () => {

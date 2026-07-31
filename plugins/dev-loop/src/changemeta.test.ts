@@ -77,6 +77,28 @@ describe("loadChangeMeta", () => {
     const m = loadChangeMeta(tmpMeta({ parallel_groups: ["g1"] }));
     expect(m.parallel_groups).toEqual(["g1"]);
   });
+
+  describe("explicit null vs. absent key (F1 — Python dict.get parity)", () => {
+    it("needs_uiux: null is a present key -> raw None passthrough, not the False default", () => {
+      // PY: data.get("needs_uiux", False) with needs_uiux=None -> None
+      // (dict.get returns the present value, no coercion applied).
+      expect(loadChangeMeta(tmpMeta({ needs_uiux: null })).needs_uiux).toBeNull();
+    });
+
+    it("needs_uiux: absent key -> default False", () => {
+      expect(loadChangeMeta(tmpMeta({})).needs_uiux).toBe(false);
+    });
+
+    it("finish: null and absent both resolve to null (Python default is already None)", () => {
+      expect(loadChangeMeta(tmpMeta({ finish: null })).finish).toBeNull();
+      expect(loadChangeMeta(tmpMeta({})).finish).toBeNull();
+    });
+
+    it("flow_profile: null and absent both resolve to null (Python default is already None)", () => {
+      expect(loadChangeMeta(tmpMeta({ flow_profile: null })).flow_profile).toBeNull();
+      expect(loadChangeMeta(tmpMeta({})).flow_profile).toBeNull();
+    });
+  });
 });
 
 describe("isSerial", () => {

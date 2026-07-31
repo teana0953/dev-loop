@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { readJsonObject } from "./jsonio.js";
 
 export interface Checkpoint {
   phase: string;
@@ -46,7 +47,36 @@ export function saveCheckpoint(cp: Checkpoint, path: string): void {
   writeFileSync(path, JSON.stringify(cp, null, 2), "utf-8");
 }
 
+// phase/change_id/branch have no default in Python's @dataclass Checkpoint
+// (they are required positional/keyword args); every other field has a
+// default via `field(default_factory=...)` or a literal. cls(**data) raises
+// TypeError if a required key is missing OR if data contains a key that
+// isn't a declared field ("unexpected keyword argument"). Both checks below
+// exist to reproduce that, not just the required-field half of it.
+const REQUIRED_CHECKPOINT_KEYS = ["phase", "change_id", "branch"] as const;
+const KNOWN_CHECKPOINT_KEYS = new Set<string>([
+  ...REQUIRED_CHECKPOINT_KEYS,
+  ...Object.keys(DEFAULTS),
+]);
+
 export function loadCheckpoint(path: string): Checkpoint {
-  const data = JSON.parse(readFileSync(path, "utf-8")) as Partial<Checkpoint>;
-  return makeCheckpoint(data as Pick<Checkpoint, "phase" | "change_id" | "branch"> & Partial<Checkpoint>);
+  const data = readJsonObject(path, "checkpoint");
+  for (const key of Object.keys(data)) {
+    if (!KNOWN_CHECKPOINT_KEYS.has(key)) {
+      // Python's Checkpoint(**data) would raise TypeError: unexpected
+      // keyword argument here. Rejecting now (rather than tolerating and
+      // dropping the key) matters because TS does not yet *write*
+      // checkpoints read from elsewhere -- once it does, a checkpoint that
+      // silently round-trips through TS with an extra key would blow up
+      // Python on resume, at the worst possible time. Failing at load time,
+      // in TS, is strictly easier to diagnose than that.
+      throw new Error(`checkpoint has unknown key ${JSON.stringify(key)}`);
+    }
+  }
+  for (const key of REQUIRED_CHECKPOINT_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(data, key)) {
+      throw new Error(`checkpoint missing required key ${JSON.stringify(key)}`);
+    }
+  }
+  return makeCheckpoint(data as unknown as Pick<Checkpoint, "phase" | "change_id" | "branch"> & Partial<Checkpoint>);
 }

@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
+// src/jsonio.ts
+import { readFileSync } from "node:fs";
+function readJsonObject(path, label) {
+  const parsed = JSON.parse(readFileSync(path, "utf-8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object, got ${JSON.stringify(parsed)}`);
+  }
+  return parsed;
+}
+
 // src/checkpoint.ts
-import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 var DEFAULTS = {
   iteration: 0,
   last_artifact: "",
@@ -19,8 +28,23 @@ var DEFAULTS = {
 function makeCheckpoint(partial) {
   return { ...DEFAULTS, ...partial };
 }
+var REQUIRED_CHECKPOINT_KEYS = ["phase", "change_id", "branch"];
+var KNOWN_CHECKPOINT_KEYS = /* @__PURE__ */ new Set([
+  ...REQUIRED_CHECKPOINT_KEYS,
+  ...Object.keys(DEFAULTS)
+]);
 function loadCheckpoint(path) {
-  const data = JSON.parse(readFileSync(path, "utf-8"));
+  const data = readJsonObject(path, "checkpoint");
+  for (const key of Object.keys(data)) {
+    if (!KNOWN_CHECKPOINT_KEYS.has(key)) {
+      throw new Error(`checkpoint has unknown key ${JSON.stringify(key)}`);
+    }
+  }
+  for (const key of REQUIRED_CHECKPOINT_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(data, key)) {
+      throw new Error(`checkpoint missing required key ${JSON.stringify(key)}`);
+    }
+  }
   return makeCheckpoint(data);
 }
 

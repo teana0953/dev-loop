@@ -96,4 +96,49 @@ describe("checkpoint", () => {
     expect(keys).toEqual([...PYTHON_CHECKPOINT_KEYS].sort());
     expect(keys.length).toBe(15);
   });
+
+  describe("root and shape validation (F2)", () => {
+    // Python's Checkpoint.load is `cls(**data)`. A non-dict root can't be
+    // unpacked as keyword arguments at all -> TypeError. An array root
+    // spread in TS (`{...[1,2,3]}`) silently becomes `{0:1,1:2,2:3}` with no
+    // error and a checkpoint with phase: undefined -- exactly the bug this
+    // guards against.
+    it("throws on a malformed JSON root: array", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify([1, 2, 3]), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+
+    it("throws on a malformed JSON root: string", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify("oops"), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+
+    it("throws on a malformed JSON root: number", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify(42), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+
+    it("throws on a malformed JSON root: null", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify(null), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+
+    it("throws when a required key (phase/change_id/branch) is missing", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify({ change_id: "c", branch: "b" }), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+
+    it("throws on an unknown key, matching Python's TypeError on Checkpoint(**data)", () => {
+      const p = join(tmp(), "checkpoint.json");
+      writeFileSync(p, JSON.stringify({
+        phase: "apply", change_id: "c", branch: "b", bogus_future_field: 1,
+      }), "utf-8");
+      expect(() => loadCheckpoint(p)).toThrow();
+    });
+  });
 });
