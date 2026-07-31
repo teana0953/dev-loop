@@ -44,6 +44,39 @@ describe("loadChangeMeta", () => {
   it("throws on a malformed JSON root: null", () => {
     expect(() => loadChangeMeta(tmpMeta(null))).toThrow();
   });
+
+  it("reads parallel_groups and finish together from a loaded file", () => {
+    const m = loadChangeMeta(tmpMeta({ parallel_groups: ["g1", "g2"], finish: "merge" }));
+    expect(m.parallel_groups).toEqual(["g1", "g2"]);
+    expect(m.finish).toBe("merge");
+  });
+
+  it("passes needs_uiux through unchanged when it is a non-boolean (Python parity)", () => {
+    const m = loadChangeMeta(tmpMeta({ needs_uiux: [] }));
+    expect(m.needs_uiux).toEqual([]);
+  });
+
+  it("throws when parallel_groups is an object, not an array", () => {
+    expect(() => loadChangeMeta(tmpMeta({ parallel_groups: { a: 1 } }))).toThrow();
+  });
+
+  it("throws when parallel_groups is a number", () => {
+    expect(() => loadChangeMeta(tmpMeta({ parallel_groups: 42 }))).toThrow();
+  });
+
+  it("throws when parallel_groups is explicit null", () => {
+    expect(() => loadChangeMeta(tmpMeta({ parallel_groups: null }))).toThrow();
+  });
+
+  it("defaults parallel_groups to [] when the key is absent", () => {
+    const m = loadChangeMeta(tmpMeta({}));
+    expect(m.parallel_groups).toEqual([]);
+  });
+
+  it("accepts a legitimate parallel_groups array", () => {
+    const m = loadChangeMeta(tmpMeta({ parallel_groups: ["g1"] }));
+    expect(m.parallel_groups).toEqual(["g1"]);
+  });
 });
 
 describe("isSerial", () => {
