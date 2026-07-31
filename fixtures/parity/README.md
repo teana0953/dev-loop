@@ -39,6 +39,13 @@ TypeScript 兩個引擎,斷言同一張預期表。任一側漂移即變紅。
 - fixture 是兩引擎共用的單一真理:只改一側的預期值,或只讓一側跳過某 case,
   即為錯誤。
 - 檔內每個 section 都必須有人消費 —— 兩側的 loader 會斷言 section 名稱集合完全相符。
+- `checkpoint.json` 的 `structKeys` section 額外鎖住完整欄位集合(不是子集)——
+  因為 checkpoint 是雙軌交接時真正落地的磁碟契約,只加在單一引擎的欄位在其餘
+  全是子集比對的 case 裡完全隱形,resume 到另一引擎時才會炸。
+- 新增 case 只准加進 fixture 檔本身,不准只加進某一側的測試檔——那等於讓兩側
+  斷言不同的預期表,parity 就名不副實了。真正的分歧(兩引擎行為本就該不同)
+  要走「已裁決的刻意分歧」那套流程,附上 `divergence_reason`;不准為了讓某一側
+  測試變綠,就偷偷放寬其中一側的 `expect`。
 
 ## M2c 之後(Python 刪除時)
 
@@ -47,6 +54,12 @@ TypeScript 兩個引擎,斷言同一張預期表。任一側漂移即變紅。
 1. 移除 `tests/test_parity_*.py`(pytest 那半邊的消費者)
 2. 目錄改名 `fixtures/parity/` → `fixtures/behavior/`
 3. 清掉所有 `py` / `ts` / `divergence_reason` 欄位(分歧概念隨 Python 一起消失),
-   把 `py` 區塊的內容扶正成 case 的 `expect`/`expect_throws`
+   把 **`ts`** 區塊的內容扶正成 case 的 `expect`/`expect_throws`——**不是** `py`
+   區塊。M2c 之後留下來的引擎是 TS,而每一個已裁決的分歧,`py` 那半邊斷言的
+   正是 TS 刻意不要的行為(例如 `parallel_groups: {"a": 1}` 載入成功、
+   `isSerial` 回傳 `true`)。扶正 `py` 只會產生一份第一天就是紅的「TS 行為規格」,
+   或誘使日後有人把 TS「修回」Python 那種靜默取消平行執行的行為。
+   原本的 `divergence_reason` 文字必須保留下來——搬到該 case 的 `note` 欄位,
+   讓「為什麼選了較嚴格的行為」這段推理不隨欄位改名一起消失。
 
 之後這批檔案不再是 parity,而是 **TS 引擎的行為規格**。
