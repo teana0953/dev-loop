@@ -1,0 +1,121 @@
+{
+  "loadChangeMeta": [
+    {
+      "name": "missing file yields all defaults",
+      "file_absent": true,
+      "expect": { "parallel_groups": [], "needs_uiux": false, "finish": null, "flow_profile": null }
+    },
+    {
+      "name": "empty object yields all defaults",
+      "input": {},
+      "expect": { "parallel_groups": [], "needs_uiux": false, "finish": null, "flow_profile": null }
+    },
+    {
+      "name": "fully populated file round-trips every field",
+      "input": {
+        "parallel_groups": [["a"], ["b"]], "needs_uiux": true,
+        "finish": "pr", "flow_profile": "light"
+      },
+      "expect": {
+        "parallel_groups": [["a"], ["b"]], "needs_uiux": true,
+        "finish": "pr", "flow_profile": "light"
+      }
+    },
+    {
+      "name": "flow_profile full is accepted",
+      "input": { "flow_profile": "full" },
+      "expect": { "flow_profile": "full" }
+    },
+    {
+      "name": "explicit null flow_profile is the same as absent",
+      "input": { "flow_profile": null },
+      "expect": { "flow_profile": null }
+    },
+    {
+      "name": "unknown flow_profile is rejected at load time",
+      "input": { "flow_profile": "fast" },
+      "expect_throws": true
+    },
+    {
+      "name": "explicit null needs_uiux is not coerced to false",
+      "input": { "needs_uiux": null },
+      "expect": { "needs_uiux": null }
+    },
+    {
+      "name": "non-boolean needs_uiux passes through unchanged",
+      "input": { "needs_uiux": [] },
+      "expect": { "needs_uiux": [] }
+    },
+    {
+      "name": "array root is rejected",
+      "input": [],
+      "expect_throws": true
+    },
+    {
+      "name": "parallel_groups as an object",
+      "input": { "parallel_groups": { "a": 1 } },
+      "divergence_reason": "TS 在載入時就驗 parallel_groups 是不是 list(裁決:壞設定要在 start 就炸,不能等到 apply 分支才發現);Python 放行,非 list 值要到 is_serial 的 len() 才可能出事,而 dict 剛好有 len(),於是靜默選了序列分支。",
+      "py": { "expect": { "parallel_groups": { "a": 1 } } },
+      "ts": { "expect_throws": true }
+    },
+    {
+      "name": "parallel_groups explicitly null",
+      "input": { "parallel_groups": null },
+      "divergence_reason": "同上:TS 載入即拒;Python 放行,要到 is_serial 才 TypeError。兩邊最終都會炸,但炸的時機不同。",
+      "py": { "expect": { "parallel_groups": null } },
+      "ts": { "expect_throws": true }
+    },
+    {
+      "name": "parallel_groups as a number",
+      "input": { "parallel_groups": 3 },
+      "divergence_reason": "同上:TS 載入即拒;Python 放行,要到 is_serial 才 TypeError。",
+      "py": { "expect": { "parallel_groups": 3 } },
+      "ts": { "expect_throws": true }
+    }
+  ],
+
+  "isSerial": [
+    {
+      "name": "missing parallel_groups is serial",
+      "input": {},
+      "expect": { "value": true }
+    },
+    {
+      "name": "empty parallel_groups is serial",
+      "input": { "parallel_groups": [] },
+      "expect": { "value": true }
+    },
+    {
+      "name": "one group is serial",
+      "input": { "parallel_groups": [["a"]] },
+      "expect": { "value": true }
+    },
+    {
+      "name": "two groups are parallel",
+      "input": { "parallel_groups": [["a"], ["b"]] },
+      "expect": { "value": false }
+    },
+    {
+      "name": "three groups are parallel",
+      "input": { "parallel_groups": [["a"], ["b"], ["c"]] },
+      "expect": { "value": false }
+    },
+    {
+      "name": "null parallel_groups blows up on both engines",
+      "input": { "parallel_groups": null },
+      "expect_throws": true
+    },
+    {
+      "name": "numeric parallel_groups blows up on both engines",
+      "input": { "parallel_groups": 3 },
+      "expect_throws": true
+    },
+    {
+      "name": "object parallel_groups",
+      "input": { "parallel_groups": { "a": 1 } },
+      "divergence_reason": "Python 的 len(dict) 是 1,於是靜默判成序列;TS 在 loadChangeMeta 就拒收,根本走不到 isSerial。這正是 TS 較嚴格的理由——一個手滑寫成物件的設定,在 Python 下會安靜地取消平行執行。",
+      "py": { "expect": { "value": true } },
+      "ts": { "expect_throws": true }
+    }
+  ]
+}
