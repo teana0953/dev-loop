@@ -53,8 +53,8 @@ fixtures/parity/
 
 - `expect` 是**欄位子集**——只斷言該 case 想鎖的欄位,不強迫每個 case 列全部欄位
 - `expect_throws: true` 標記必須拋錯的輸入(不比對錯誤訊息文字,兩語言的例外文法本就不同)
-- 已裁決的刻意分歧用 `expect_py` / `expect_ts` 分寫,並附 `divergence_reason` 說明裁決理由
-- 已知但延後處理的分歧用 `known_divergence: "<id>"` 標記,該 case 不斷言該欄位
+- 已裁決的刻意分歧改用 `py` / `ts` 兩個巢狀區塊分寫(分歧的一側也可能是「拋錯」,巢狀才能讓兩側各自帶 `expect` 或 `expect_throws`),並附 `divergence_reason` 說明裁決理由
+- 已知但延後處理的分歧(目前只有 checkpoint 的時間戳文法一處)不列入 `expect`,改在測試裡斷言兩引擎共通的那部分保證並註明理由
 
 ## 涵蓋範圍(定案:只做高風險四項)
 
@@ -85,9 +85,10 @@ fixtures/parity/
 雙軌交接的核心——兩引擎真正會交換的檔。兩段:
 
 - **round trip**:fixture 的 `input` 直接是「磁碟上的 checkpoint JSON」,兩引擎各自 load 後斷言同一 struct。這正是混合引擎續跑實際走的路徑
-- **拒收**:root 非 object、`phase` 非法值、`iteration` 非數、必要欄位缺失
+- **拒收**:root 非 object、必要欄位(`phase`/`change_id`/`branch`)缺失、出現未知欄位
+- **刻意不驗證**:`phase` 的值域與 `iteration` 的型別在載入時都不檢查(Python 的 dataclass 不做值域驗證,TS 照抄)。這件事本身寫成明確的 case,免得日後有人「順手加驗證」而不知道這是共同契約
 
-時間戳文法差異(Python 微秒 `+00:00` vs TS 毫秒 `Z`,即既有延後項 F4)以 `known_divergence: "timestamp-grammar"` 標記,不寫進 `expect`。不假綠,也不擋 M2b。
+時間戳文法差異(Python 微秒 `+00:00` vs TS 毫秒 `Z`,即既有延後項 F4)不寫進 `expect`;改在兩側測試裡斷言 `updated_at` 非空且以 `YYYY-MM-DDTHH:MM:SS` 開頭——這段是兩引擎都成立的共同保證。不假綠,也不擋 M2b。
 
 ### `followup.json`
 
