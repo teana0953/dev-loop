@@ -1,12 +1,13 @@
 import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Computes the path to the history.jsonl file alongside a checkpoint.
+ * Preserves relative paths: relative input produces relative output.
  */
 export function historyPath(checkpointPath: string): string {
   const checkpointDir = dirname(checkpointPath);
-  return resolve(checkpointDir, "history.jsonl");
+  return join(checkpointDir, "history.jsonl");
 }
 
 /**
