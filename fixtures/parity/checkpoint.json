@@ -105,5 +105,19 @@
       "input": { "phase": "apply", "change_id": "加匯出", "branch": "feat/匯出" },
       "expect": { "change_id": "加匯出", "branch": "feat/匯出" }
     }
+  ],
+
+  "structKeys": [
+    {
+      "name": "minimal checkpoint pins the complete field set",
+      "input": { "phase": "apply", "change_id": "add-csv-export", "branch": "feat/csv" },
+      "expect": {
+        "keys": [
+          "branch", "change_id", "finish_mode", "flow_profile", "gate_failures",
+          "iteration", "last_artifact", "needs_uiux", "non_blocking", "phase",
+          "propose_attempts", "resume_exec", "review_legs", "units", "updated_at"
+        ]
+      }
+    }
   ]
 }

@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { expect } from "vitest";
 
 // src/ -> plugins/dev-loop/ -> plugins/ -> repo root
-const PARITY_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../fixtures/parity");
+export const PARITY_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../fixtures/parity");
 
 export interface Expectation {
   expect?: Record<string, unknown>;

@@ -52,11 +52,30 @@ def resolve_expectation(case, engine):
     return expect, throws
 
 
+def _assert_type_strict_eq(got, want, path):
+    """遞迴、型別嚴格的相等比較——match TS 那側 toStrictEqual 的遞迴行為。
+
+    dict 額外檢查鍵集合完全相同,list 額外檢查長度相同,兩者都往下遞迴比對
+    每個元素/值的型別與內容。純量則同時比 type 與值,讓 bool/int、int/float
+    這類 Python 認為「相等」但語意不同的值被視為不符。
+    """
+    assert type(got) is type(want), "%s = %r, want %r" % (path, got, want)
+    if isinstance(want, dict):
+        assert set(got) == set(want), "%s = %r, want %r" % (path, got, want)
+        for k in want:
+            _assert_type_strict_eq(got[k], want[k], "%s.%s" % (path, k))
+    elif isinstance(want, list):
+        assert len(got) == len(want), "%s = %r, want %r" % (path, got, want)
+        for i, w in enumerate(want):
+            _assert_type_strict_eq(got[i], w, "%s[%d]" % (path, i))
+    else:
+        assert got == want, "%s = %r, want %r" % (path, got, want)
+
+
 def assert_subset(actual, expected, label):
-    """expected 是欄位子集。型別也要嚴格比——match TS 那側的 toStrictEqual。"""
+    """expected 是欄位子集。型別也要嚴格比,且遞迴比到 dict/list 內部——
+    match TS 那側的 toStrictEqual(它本來就是遞迴的)。"""
     for key, want in expected.items():
         assert key in actual, "%s: missing field %s" % (label, key)
         got = actual[key]
-        assert type(got) is type(want) and got == want, (
-            "%s: field %s = %r, want %r" % (label, key, got, want)
-        )
+        _assert_type_strict_eq(got, want, "%s: field %s" % (label, key))

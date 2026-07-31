@@ -41,12 +41,17 @@ describe("parity: resolveModel", () => {
   for (const c of parityCases("config", "resolveModel", SECTIONS)) {
     it(c.name, () => {
       const stage = c.stage as string;
+      // configOf(c) is hoisted outside the throws/non-throws branch (and outside
+      // any toThrow closure) so a case whose config merely fails to LOAD can't be
+      // mistaken for a satisfied "resolveModel throws" expectation -- matching the
+      // Python side, which builds `cfg` outside `pytest.raises`.
+      const cfg = configOf(c);
       const { expect: want, throws } = resolveExpectation(c);
       if (throws) {
-        expect(() => resolveModel(stage, configOf(c))).toThrow();
+        expect(() => resolveModel(stage, cfg)).toThrow();
         return;
       }
-      expectSubset({ value: resolveModel(stage, configOf(c)) }, want!, c.name);
+      expectSubset({ value: resolveModel(stage, cfg) }, want!, c.name);
     });
   }
 });

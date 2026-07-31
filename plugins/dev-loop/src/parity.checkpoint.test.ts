@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parityCases, resolveExpectation, expectSubset } from "./parityFixture.js";
 import { loadCheckpoint, saveCheckpoint } from "./checkpoint.js";
 
-const SECTIONS = ["loadCheckpoint", "roundTrip"];
+const SECTIONS = ["loadCheckpoint", "roundTrip", "structKeys"];
 
 // 兩引擎共通的時間戳保證(小數位與時區後綴的文法差異是已知延後項,不在此斷言)
 const TS_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
@@ -43,6 +43,20 @@ describe("parity: checkpoint round trip", () => {
       expectSubset(reloaded as unknown as Record<string, unknown>, want!, c.name);
       // save 一定重寫 updated_at;文法差異是延後項,只斷言兩邊共通的部分
       expect(TS_PREFIX.test(reloaded.updated_at), `${c.name}: updated_at = ${reloaded.updated_at}`).toBe(true);
+    });
+  }
+});
+
+describe("parity: checkpoint structKeys", () => {
+  // Checkpoint 是雙軌交接的磁碟契約——這裡鎖住完整鍵集合,而不只是子集,
+  // 因為一個只加在單一引擎的欄位,在其餘全是子集比對的測試裡完全隱形。
+  for (const c of parityCases("checkpoint", "structKeys", SECTIONS)) {
+    it(c.name, () => {
+      const { expect: want, throws } = resolveExpectation(c);
+      expect(throws, "structKeys cases must not expect a throw").toBe(false);
+      const cp = loadCheckpoint(write(c.input));
+      const actual = { keys: Object.keys(cp).sort() };
+      expectSubset(actual as unknown as Record<string, unknown>, want!, c.name);
     });
   }
 });
