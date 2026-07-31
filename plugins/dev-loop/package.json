@@ -1,0 +1,22 @@
+{
+  "name": "@dev-loop/engine",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "devloop": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "eslint": "^10.8.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
+  }
+}
