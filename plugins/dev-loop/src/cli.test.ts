@@ -58,6 +58,32 @@ describe("cli status", () => {
   });
 
   it.skipIf(process.platform === "win32")(
+    "committed bundle (dist/cli.js) is directly executable (no `node` prefix, execute bit set)",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "cli-"));
+      const p = join(dir, "cp.json");
+      writeFileSync(
+        p,
+        JSON.stringify({
+          phase: "gate",
+          change_id: "c",
+          branch: "b",
+          iteration: 1,
+          gate_failures: 0,
+        }),
+        "utf-8",
+      );
+      // Invoke dist/cli.js directly (no "node" prefix) relying on its own
+      // shebang + execute bit, exactly as `npm link`/`npx` would. This locks
+      // that `npm run bundle` always leaves the committed bundle executable.
+      const out = execFileSync(CLI, ["status", "--file", p], { encoding: "utf-8" });
+      const lines = out.trim().split("\n");
+      expect(lines[0]).toBe("phase=gate iteration=1 change_id=c branch=b");
+      expect(lines[1]).toMatch(/^next: /);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "wrapper (bin/devloop-ts) produces the same output as direct invocation",
     () => {
       const dir = mkdtempSync(join(tmpdir(), "cli-"));
