@@ -1,0 +1,109 @@
+{
+  "loadCheckpoint": [
+    {
+      "name": "minimal checkpoint fills every default",
+      "input": { "phase": "apply", "change_id": "add-csv-export", "branch": "feat/csv" },
+      "expect": {
+        "phase": "apply", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 0, "last_artifact": "", "non_blocking": [], "updated_at": "",
+        "resume_exec": null, "units": [], "review_legs": [], "propose_attempts": 0,
+        "gate_failures": 0, "finish_mode": null, "flow_profile": "full", "needs_uiux": false
+      }
+    },
+    {
+      "name": "fully populated checkpoint round-trips every field",
+      "input": {
+        "phase": "review", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 3, "last_artifact": "docs/review.md", "non_blocking": ["tidy imports"],
+        "updated_at": "2026-07-31T00:00:00+00:00", "resume_exec": "gate",
+        "units": [{ "id": "u1", "status": "done" }], "review_legs": ["security"],
+        "propose_attempts": 2, "gate_failures": 1, "finish_mode": "pr",
+        "flow_profile": "light", "needs_uiux": true
+      },
+      "expect": {
+        "phase": "review", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 3, "last_artifact": "docs/review.md", "non_blocking": ["tidy imports"],
+        "updated_at": "2026-07-31T00:00:00+00:00", "resume_exec": "gate",
+        "units": [{ "id": "u1", "status": "done" }], "review_legs": ["security"],
+        "propose_attempts": 2, "gate_failures": 1, "finish_mode": "pr",
+        "flow_profile": "light", "needs_uiux": true
+      }
+    },
+    {
+      "name": "unknown key is rejected",
+      "input": { "phase": "apply", "change_id": "c", "branch": "b", "bogus": 1 },
+      "expect_throws": true
+    },
+    {
+      "name": "missing branch is rejected",
+      "input": { "phase": "apply", "change_id": "c" },
+      "expect_throws": true
+    },
+    {
+      "name": "missing phase is rejected",
+      "input": { "change_id": "c", "branch": "b" },
+      "expect_throws": true
+    },
+    {
+      "name": "missing change_id is rejected",
+      "input": { "phase": "apply", "branch": "b" },
+      "expect_throws": true
+    },
+    {
+      "name": "array root is rejected",
+      "input": [],
+      "expect_throws": true
+    },
+    {
+      "name": "phase value is deliberately not validated at load time",
+      "input": { "phase": "nope", "change_id": "c", "branch": "b" },
+      "expect": { "phase": "nope" }
+    },
+    {
+      "name": "iteration type is deliberately not validated at load time",
+      "input": { "phase": "apply", "change_id": "c", "branch": "b", "iteration": "3" },
+      "expect": { "iteration": "3" }
+    },
+    {
+      "name": "non-ascii change_id and branch survive",
+      "input": { "phase": "apply", "change_id": "加匯出", "branch": "feat/匯出" },
+      "expect": { "change_id": "加匯出", "branch": "feat/匯出" }
+    }
+  ],
+
+  "roundTrip": [
+    {
+      "name": "minimal checkpoint survives save and reload",
+      "input": { "phase": "apply", "change_id": "add-csv-export", "branch": "feat/csv" },
+      "expect": {
+        "phase": "apply", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 0, "last_artifact": "", "non_blocking": [],
+        "resume_exec": null, "units": [], "review_legs": [], "propose_attempts": 0,
+        "gate_failures": 0, "finish_mode": null, "flow_profile": "full", "needs_uiux": false
+      }
+    },
+    {
+      "name": "fully populated checkpoint survives save and reload",
+      "input": {
+        "phase": "review", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 3, "last_artifact": "docs/review.md", "non_blocking": ["tidy imports"],
+        "updated_at": "2026-07-31T00:00:00+00:00", "resume_exec": "gate",
+        "units": [{ "id": "u1", "status": "done" }], "review_legs": ["security"],
+        "propose_attempts": 2, "gate_failures": 1, "finish_mode": "pr",
+        "flow_profile": "light", "needs_uiux": true
+      },
+      "expect": {
+        "phase": "review", "change_id": "add-csv-export", "branch": "feat/csv",
+        "iteration": 3, "last_artifact": "docs/review.md", "non_blocking": ["tidy imports"],
+        "resume_exec": "gate", "units": [{ "id": "u1", "status": "done" }],
+        "review_legs": ["security"], "propose_attempts": 2, "gate_failures": 1,
+        "finish_mode": "pr", "flow_profile": "light", "needs_uiux": true
+      }
+    },
+    {
+      "name": "non-ascii fields survive save and reload",
+      "input": { "phase": "apply", "change_id": "加匯出", "branch": "feat/匯出" },
+      "expect": { "change_id": "加匯出", "branch": "feat/匯出" }
+    }
+  ]
+}
