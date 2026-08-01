@@ -42,7 +42,6 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
 無論是第一次啟動還是被觸發器續跑,每回合遵循同一套邏輯:
 
 1. **讀 phase**:有 checkpoint 就跑 `devloop status --file .devloop/checkpoint.json`,依第二行 `next:` hint 判斷這回合要做什麼(見「Resume(續跑)」);沒有 checkpoint 就是第一次啟動——先讀 `.devloop/config.json`,`superpowers`、`auto_approve` 或 `finish` 有未設的就 ✋ 一次問齊使用者(用不用 superpowers 流程;批准關卡要人工還是自動;收尾策略 merge/pr/ask)並寫回 config(之後不再問),然後從「流程」步驟 1 開始。
-   **順手備妥 code-review-graph(可選)**:若 `command -v code-review-graph` 成功且專案無 `.code-review-graph/`,跑 `code-review-graph build -q` 建圖(供步驟 8 review 選檔用);已有圖或工具未安裝就跳過。此步驟純增益,失敗一律忽略、不影響 loop 推進,也不寫 checkpoint。
 2. **推進到卡點**:照 `next:` hint(或流程步驟)一路做到下一個卡點——✋ 人工批准點,或本回合 token/時間用盡。
 3. **未到終態即本回合結束**:若 phase 還不是 `done` 或停等人工的 `escalated`,本回合到此為止;token/配額恢復後由引擎自動 arm 的 detached watcher 冷啟動續跑(見「Token 用罄續跑」),本 skill 不需自行排程。
 
@@ -78,35 +77,30 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
    `devloop qa --file .devloop/checkpoint.json --report <qa.json>`
    - pass → review;blocking → fix。
 8. **Review(code ‖ uiux 平行 legs)**:
-   **先決定 reviewer 的閱讀範圍**:若 `command -v code-review-graph` 成功且專案有 `.code-review-graph/`,先跑
+   **reviewer 的閱讀材料**:本次改動的完整 diff。
 
    ```
-   code-review-graph update -q --base <trunk>
+   git diff <trunk>...HEAD
    ```
 
-   把圖同步到最新(這一次呼叫同時涵蓋 apply 與此前每一輪 fix 的異動——`update` 只跑在這裡、只跑這一次,不在步驟 5 重複跑,單一事實來源;失敗忽略,不影響 loop)。接著取本次改動檔清單(短命分支對 trunk 的 diff):
+   審查必須看完每個真的改了的檔案——這個範圍不縮小,也不假裝縮小。
+
+   **(可選)補上分檔型審查 checklist**:若 `command -v ocr` 成功,取本次改動檔清單,向 open-code-review 要各檔的審查規則:
 
    ```
    git diff <trunk>...HEAD --name-only
+   ocr delegate rule <上一步輸出的檔案,排除 .json>
    ```
 
-   再用上一步輸出的檔案清單跑
+   把輸出**原樣**併進 **code leg** 的 prompt(不解析、不摘要)。uiux leg 不給——它審的是 UX 驗收準則,NPE/SQL-injection 那類 checklist 對它是噪音。
 
-   ```
-   code-review-graph impact --files <上一步輸出的檔案...> --depth 2 --max-results 50
-   ```
+   三件必須照做的事:
 
-   取回 JSON 的 `impacted_files`(caller/dependent/test 相關檔;**注意這些是絕對路徑**,而 `git diff --name-only` 印的是 repo-relative 路徑——用之前先把 `impacted_files` 正規化成 repo-relative,再跟改動檔比較/聯集,否則同一檔案兩種寫法會被當成兩個不同檔重複計)。
+   - **路徑要逐一作為獨立參數傳遞。** 把整串路徑當成單一參數傳入時,`ocr` 仍 **exit 0** 並回傳單一通用規則組,沒有任何錯誤訊號——這個錯誤無法靠 exit code 偵測,只能靠正確傳參避免。
+   - **排除 `.json`。** 該規則的內容是「檢查 json-key 的拼字、忽略 json-values 的內容」,而 `fixtures/parity/*.json` 這類檔案的意義全在 value;讓那句指令不要進 prompt。這**不影響** `.json` 檔進 review,只是不向 OCR 要它們的規則。
+   - **這是加法,不是減法。** OCR 只補充「該注意什麼」,不決定「審哪些檔」。檔案清單永遠是上面那條 `git diff`。OCR 自己的 `delegate preview` 會排除測試檔與 `.md`,**不要用它選檔**。
 
-   給各 leg subagent 的閱讀範圍是**兩塊,性質不同、都要給**:
-   - (a) 範圍化 diff,看「改了什麼」:`git diff <trunk>...HEAD -- <改動檔...>`。**誠實說明**:`<改動檔...>` 本來就是全部改動檔,這裡的 `--` 限制對範圍**沒有縮小效果**,必然等於不加限制的整包 diff——審查本來就得看完每個真的改了的檔案,這塊不可能、也不該再縮小。
-   - (b) 波及範圍(blast radius)的**檔名清單**,不是內容:把 `impacted_files` 正規化成 repo-relative 後,扣掉已經在改動檔集合裡的那些,得到「波及檔清單」;只把這份**清單(檔案路徑)**交給 reviewer,**不要**把每個波及檔的目前內容預先整份塞進 prompt——reviewer 看完 (a) 的 diff 後,若判斷某處改動可能牽動清單裡的特定檔案,自行用 Read 工具打開該檔確認即可,清單裡其餘檔案不必逐一讀完。
-
-   **這才是真正縮小範圍的地方**:(a) 必然等於整包 diff(不可縮小,也不假裝縮小);(b) 從「每個波及檔都整份塞內容」改成「只給一份短檔名清單」——波及檔清單為空時(改動已收斂、依賴與測試多半已在改動檔內,小步 TDD 改動的常態),兩塊材料合計跟退回讀整包 diff **完全等量**,不多不少;波及檔清單非空時,多出來的只是幾行路徑文字,不是被波及檔案的完整內容(後者才是舊版真正「比整包 diff 還多」的病灶,這裡已經拿掉)。換句話說:比起現行整包 diff 做法,新流程**不會更多**——常態(波及檔為空)下持平,其餘情況只多一份可忽略的清單;真正的省 token 效果來自不再對每個波及檔案囫圇塞全文,讓 reviewer 依需要才讀。
-
-   `context_savings` 欄位是 code-review-graph 工具自己估的省 token 量,比較基準是「不用圖時得掃整個 codebase 找關聯」——跟本文自己的退回基準(讀整包 diff)不是同一件事,**不能**拿來宣稱本文範圍比整包 diff 小,本文不再引用它做任何比較主張。
-
-   **退回現行做法(讀整包 diff)的觸發條件有二,任一成立即退回**:① 工具不在、圖不在或 `impact` 命令非 0 退出;② 命令雖 exit 0,但回傳的 `impacted_files` 與 `changed_nodes` 皆為空——這代表圖還不認得這批檔(圖 miss),不是「真的沒有波及檔」,不能悄悄把範圍縮成只有改動檔。code leg 與 uiux leg 同吃這份範圍。
+   **降級(任一成立即略過整段,照常審查)**:`ocr` 不在 PATH、命令非 0 退出、或逾時(30 秒)。review 本身恆不可裁,OCR 缺席不影響 loop 推進。code leg 與 uiux leg 同吃上面那份 diff。
 
    接著 `legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)
