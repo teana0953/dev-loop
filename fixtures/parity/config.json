@@ -1,0 +1,237 @@
+{
+  "loadConfig": [
+    {
+      "name": "missing file yields all defaults",
+      "file_absent": true,
+      "expect": {
+        "finish": null, "auto_arm": true, "gate_cmds": [], "superpowers": null,
+        "auto_approve": false, "model_profile": null, "models": {}
+      }
+    },
+    {
+      "name": "empty object yields all defaults",
+      "input": {},
+      "expect": {
+        "finish": null, "auto_arm": true, "gate_cmds": [], "superpowers": null,
+        "auto_approve": false, "model_profile": null, "models": {}
+      }
+    },
+    {
+      "name": "fully populated file round-trips every field",
+      "input": {
+        "finish": "pr", "auto_arm": false, "gate_cmds": ["pytest -q", "ruff check ."],
+        "superpowers": true, "auto_approve": true, "model_profile": "budget",
+        "models": { "apply": "opus", "fix": "haiku" }
+      },
+      "expect": {
+        "finish": "pr", "auto_arm": false, "gate_cmds": ["pytest -q", "ruff check ."],
+        "superpowers": true, "auto_approve": true, "model_profile": "budget",
+        "models": { "apply": "opus", "fix": "haiku" }
+      }
+    },
+    {
+      "name": "explicit null auto_arm disables the watcher",
+      "input": { "auto_arm": null },
+      "expect": { "auto_arm": false }
+    },
+    {
+      "name": "auto_arm 0 is falsy",
+      "input": { "auto_arm": 0 },
+      "expect": { "auto_arm": false }
+    },
+    {
+      "name": "auto_arm non-empty string is truthy",
+      "input": { "auto_arm": "no" },
+      "expect": { "auto_arm": true }
+    },
+    {
+      "name": "explicit null gate_cmds survives as null for downstream validation",
+      "input": { "gate_cmds": null },
+      "expect": { "gate_cmds": null }
+    },
+    {
+      "name": "explicit null model_profile is the same as absent",
+      "input": { "model_profile": null },
+      "expect": { "model_profile": null }
+    },
+    {
+      "name": "explicit null models is rejected",
+      "input": { "models": null },
+      "expect_throws": true
+    },
+    {
+      "name": "models as a list is rejected",
+      "input": { "models": [] },
+      "expect_throws": true
+    },
+    {
+      "name": "unknown model stage is rejected",
+      "input": { "models": { "gate": "sonnet" } },
+      "expect_throws": true
+    },
+    {
+      "name": "full model id instead of an alias is rejected",
+      "input": { "models": { "apply": "claude-sonnet-5" } },
+      "expect_throws": true
+    },
+    {
+      "name": "unknown model_profile is rejected",
+      "input": { "model_profile": "cheap" },
+      "expect_throws": true
+    },
+    {
+      "name": "non-boolean superpowers passes through unchanged",
+      "input": { "superpowers": "yes" },
+      "expect": { "superpowers": "yes" }
+    },
+    {
+      "name": "superpowers false stays false",
+      "input": { "superpowers": false },
+      "expect": { "superpowers": false }
+    },
+    {
+      "name": "auto_approve 1 is not true",
+      "input": { "auto_approve": 1 },
+      "expect": { "auto_approve": false }
+    },
+    {
+      "name": "auto_approve string true is not true",
+      "input": { "auto_approve": "true" },
+      "expect": { "auto_approve": false }
+    },
+    {
+      "name": "auto_approve only honours JSON true",
+      "input": { "auto_approve": true },
+      "expect": { "auto_approve": true }
+    },
+    {
+      "name": "array root is rejected",
+      "input": [1, 2, 3],
+      "expect_throws": true
+    },
+    {
+      "name": "null root is rejected",
+      "input": null,
+      "expect_throws": true
+    }
+  ],
+
+  "resolveModel": [
+    {
+      "name": "budget leaves brainstorm inheriting",
+      "config": { "model_profile": "budget" }, "stage": "brainstorm",
+      "expect": { "value": null }
+    },
+    {
+      "name": "budget routes apply to sonnet",
+      "config": { "model_profile": "budget" }, "stage": "apply",
+      "expect": { "value": "sonnet" }
+    },
+    {
+      "name": "budget leaves review inheriting",
+      "config": { "model_profile": "budget" }, "stage": "review",
+      "expect": { "value": null }
+    },
+    {
+      "name": "budget routes fix to sonnet",
+      "config": { "model_profile": "budget" }, "stage": "fix",
+      "expect": { "value": "sonnet" }
+    },
+    {
+      "name": "explicit models override beats the budget route",
+      "config": { "model_profile": "budget", "models": { "apply": "opus" } }, "stage": "apply",
+      "expect": { "value": "opus" }
+    },
+    {
+      "name": "no profile means inherit",
+      "config": {}, "stage": "apply",
+      "expect": { "value": null }
+    },
+    {
+      "name": "quality profile means inherit everywhere",
+      "config": { "model_profile": "quality" }, "stage": "fix",
+      "expect": { "value": null }
+    },
+    {
+      "name": "explicit models override works without any profile",
+      "config": { "models": { "review": "opus" } }, "stage": "review",
+      "expect": { "value": "opus" }
+    },
+    {
+      "name": "unknown stage is a caller bug and throws",
+      "config": {}, "stage": "gate",
+      "expect_throws": true
+    }
+  ],
+
+  "resolveFinish": [
+    {
+      "name": "neither set falls back to ask",
+      "config_finish": null, "meta_finish": null,
+      "expect": { "value": "ask" }
+    },
+    {
+      "name": "meta overrides config",
+      "config_finish": "merge", "meta_finish": "pr",
+      "expect": { "value": "pr" }
+    },
+    {
+      "name": "config alone is used",
+      "config_finish": "merge", "meta_finish": null,
+      "expect": { "value": "merge" }
+    },
+    {
+      "name": "explicit ask in meta is honoured",
+      "config_finish": "merge", "meta_finish": "ask",
+      "expect": { "value": "ask" }
+    },
+    {
+      "name": "invalid config value throws even when meta would win",
+      "config_finish": "MERGE", "meta_finish": "pr",
+      "expect_throws": true
+    },
+    {
+      "name": "invalid meta value throws",
+      "config_finish": null, "meta_finish": "squash",
+      "expect_throws": true
+    }
+  ],
+
+  "validateGateCmds": [
+    {
+      "name": "list of non-empty strings passes through",
+      "input": ["pytest -q", "ruff check ."],
+      "expect": { "value": ["pytest -q", "ruff check ."] }
+    },
+    {
+      "name": "empty list is valid",
+      "input": [],
+      "expect": { "value": [] }
+    },
+    {
+      "name": "whitespace-only command is rejected",
+      "input": ["   "],
+      "expect_throws": true
+    },
+    {
+      "name": "empty string command is rejected",
+      "input": [""],
+      "expect_throws": true
+    },
+    {
+      "name": "non-string element is rejected",
+      "input": [1],
+      "expect_throws": true
+    },
+    {
+      "name": "bare string instead of a list is rejected",
+      "input": "pytest -q",
+      "expect_throws": true
+    },
+    {
+      "name": "null is rejected",
+      "input": null,
+      "expect_throws": true
+    }
+  ]
+}

@@ -47,7 +47,13 @@ fixtures/parity/
 
   {"name": "null models is rejected",
    "input": {"models": null},
-   "expect_throws": true}
+   "expect_throws": true},
+
+  {"name": "parallel_groups as an object",
+   "input": {"parallel_groups": {"a": 1}},
+   "divergence_reason": "為什麼兩邊該不一樣",
+   "py": {"expect": {"parallel_groups": {"a": 1}}},
+   "ts": {"expect_throws": true}}
 ]}
 ```
 
@@ -105,7 +111,7 @@ fixtures/parity/
 
 1. 刪除前 fixture 已綠 —— 表示 TS 對每個 case 的行為與 Python 一致,且這件事已被記錄成可執行斷言
 2. 刪除時只移除 pytest 那半邊的消費者;`fixtures/parity/` 檔案本身原地不動
-3. 刪除後這批檔案不再是「parity」而是 **TS 的行為規格**。同一次 commit 改名為 `fixtures/behavior/`,並清掉 `expect_py`/`divergence_reason`(分歧概念隨 Python 一起消失)
+3. 刪除後這批檔案不再是「parity」而是 **TS 的行為規格**。同一次 commit 改名為 `fixtures/behavior/`,清掉 `py`/`ts`/`divergence_reason`(分歧概念隨 Python 一起消失),並把 **`ts`** 區塊的內容扶正成 case 的 `expect`/`expect_throws`——不是 `py` 區塊,因為留下來的引擎是 TS,`py` 那半邊斷言的正是 TS 刻意不要的行為。`divergence_reason` 的文字保留成該 case 的 `note` 欄位,不隨欄位改名一起消失
 
 長期價值不是「防兩引擎漂移」(那只是 M2b~M2c 的窗口),而是 M3 改 phase 骨架時,這批斷言構成「沒有順手改壞既有語意」的回歸網。
 

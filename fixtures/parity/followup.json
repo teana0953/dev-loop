@@ -1,0 +1,34 @@
+{
+  "renderFollowup": [
+    {
+      "name": "empty notes render nothing",
+      "notes": [],
+      "expect": { "value": "" }
+    },
+    {
+      "name": "single note",
+      "notes": ["fix flaky test"],
+      "expect": { "value": "## Follow-up(non-blocking)\n\n- fix flaky test\n" }
+    },
+    {
+      "name": "multiple notes each get their own bullet",
+      "notes": ["a", "b"],
+      "expect": { "value": "## Follow-up(non-blocking)\n\n- a\n- b\n" }
+    },
+    {
+      "name": "embedded newline is not re-indented",
+      "notes": ["line1\nline2"],
+      "expect": { "value": "## Follow-up(non-blocking)\n\n- line1\nline2\n" }
+    },
+    {
+      "name": "surrounding whitespace is preserved verbatim",
+      "notes": ["  padded  "],
+      "expect": { "value": "## Follow-up(non-blocking)\n\n-   padded  \n" }
+    },
+    {
+      "name": "non-ascii note survives",
+      "notes": ["中文 note"],
+      "expect": { "value": "## Follow-up(non-blocking)\n\n- 中文 note\n" }
+    }
+  ]
+}

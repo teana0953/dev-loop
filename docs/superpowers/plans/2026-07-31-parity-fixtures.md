@@ -253,14 +253,13 @@ def resolve_expectation(case, engine):
 
 
 def assert_subset(actual, expected, label):
-    """expected 是欄位子集。bool 用 is 比——Python 的 0 == False 會放水。"""
+    """expected 是欄位子集。型別也要嚴格比——match TS 那側的 toStrictEqual。"""
     for key, want in expected.items():
         assert key in actual, "%s: missing field %s" % (label, key)
         got = actual[key]
-        if isinstance(want, bool):
-            assert got is want, "%s: field %s = %r, want %r" % (label, key, got, want)
-        else:
-            assert got == want, "%s: field %s = %r, want %r" % (label, key, got, want)
+        assert type(got) is type(want) and got == want, (
+            "%s: field %s = %r, want %r" % (label, key, got, want)
+        )
 ```
 
 - [ ] **Step 4: 寫 Python 側 followup 測試**
