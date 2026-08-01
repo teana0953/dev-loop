@@ -51,9 +51,49 @@ OCR 的 delegation mode 官方流程是 preview(選檔)→ rule(規則)→ agent
 
 **所以檔案清單仍由 `git diff <trunk>...HEAD --name-only` 決定,這條完全不動。** 把該清單餵給 `ocr delegate rule` 取回 checklist,併進 reviewer 的 prompt。
 
-`delegate rule` 接受任意路徑、不套 preview 的過濾(原始碼 `executeDelegateRule` → `delegate.GroupRules(resolver, paths)`),所以這樣用是它支援的。查不到規則的檔案回空,不影響它進 review。
+`delegate rule` 接受任意路徑、不套 preview 的過濾(原始碼 `executeDelegateRule` → `delegate.GroupRules(resolver, paths)`),所以這樣用是它支援的。
 
 **OCR 在此是加法,不是減法。**
+
+## 實測結果(ocr v1.8.4,2026-08-01)
+
+四項在寫 plan 前就實測完畢,以下取代原本的推測:
+
+**1. `delegate rule` 對各副檔名的實際行為**
+
+| 路徑 | Rule Group |
+|---|---|
+| `src/config.ts` | `system / **/*.{ts,js,tsx,jsx}` |
+| `src/units.test.ts` | **同上** —— 測試檔與原始碼共用同一組,`delegate rule` 確實不套排除清單 |
+| `skills/dev-loop/SKILL.md` | `system / default`(通用:correctness/security/performance/maintainability/test coverage) |
+| `bin/check-deps.sh` | `system / default` |
+| `fixtures/parity/units.json` | `system / **/*.{json,json5}` |
+
+每種檔案都拿得到規則,沒有空手而回的情況。輸出依規則內容分組,同組檔案合併列出,不重複規則全文。
+
+**2. `command -v ocr`** 成立(`~/.nvm/versions/node/v24.18.0/bin/ocr`)。
+
+**3. 不寫任何檔案。** delegate 模式跑完,`git status` 無變化、家目錄未建 `~/.ocr`,`ocr session list` 回報無 session(session 是 `ocr review` 才產生的)。**所以不需要 `.gitignore` 條目**——正好抵掉被移除的 `.code-review-graph/`。
+
+**4. 耗時與規模**:30 個檔案 → 4 個 rule group、202 行 / 12.8 KB、**0.15 秒**。分組使輸出不隨檔案數線性膨脹。timeout 取 30 秒即遠高於實測值兩個數量級,足夠寬鬆。
+
+**5. 額外觀察:參數傳錯是靜默降級,不是失敗。** 若把整串路徑當成單一參數傳入(shell 未斷詞的典型錯誤),OCR **exit 0** 並回傳單一 `system / default` 組,`Applies to:` 一行列出全部路徑。沒有任何錯誤訊號。SKILL 必須明確要求逐一路徑作為獨立參數傳遞,且無法靠 exit code 偵測此錯誤。
+
+## 裁決:`.json` 路徑不送進 `delegate rule`
+
+實測發現 `.json` 的規則全文是:
+
+```
+Check JSON files for spelling errors in json-keys; ignore the content of json-values.
+```
+
+`fixtures/parity/*.json` 是本專案最重要的檔案之一,而它們**整份的意義就在 value**(預期輸出、exit code、逐字 stdout)。把「ignore the content of json-values」放進 reviewer 的 prompt,恰好指示它跳過唯一該看的東西——這是採用 OCR 反而讓 review 變差的地方。
+
+**因此建構送給 `delegate rule` 的路徑清單時排除 `.json`。**
+
+選擇讓該指令根本不進 prompt,而非進了 prompt 再寫一句 caveat 要 reviewer 推翻它:後者要求模型在自己的 prompt 內解決矛盾,不必要地脆弱。`.json` 的規則本就只有拼字檢查,移除無損失。
+
+**分界要講清楚**:這不是讓 OCR 選檔。review 的檔案清單完全沒變,`.json` 照樣整份進 review;變的只是「就哪些路徑去問 OCR 要規則」。前者是審查範圍,後者是輔助材料。
 
 ## 也不採用 OCR 的 Claude Code plugin / skill
 
@@ -72,7 +112,7 @@ OCR 自帶 `.claude-plugin/` 與 `delegate-review.md` 命令。不接,只用 CLI
 **降級**(任一成立即照現行方式審,loop 不受影響,review 本身恆不可裁):
 - `ocr` 不在 PATH
 - `ocr delegate rule` 非 0 退出
-- 命令逾時(閾值待實測後定,見下)
+- 命令逾時(30 秒;實測 30 檔為 0.15 秒,此閾值高出兩個數量級)
 
 **空輸出不是失敗**。CRG 的降級條件裡有一條是「exit 0 但 `impacted_files` 與 `changed_nodes` 皆為空」,因為那代表圖不認得這批檔(圖 miss),不能當成「真的沒有波及檔」。OCR 沒有這個問題:空輸出代表這批檔案沒有對應規則(例如全是 `.md`),是合法結果。那條容易誤判的降級條件直接消失。
 
@@ -111,12 +151,11 @@ OCR 自帶 `.claude-plugin/` 與 `delegate-review.md` 命令。不接,只用 CLI
 
 負面(最重要):**全 repo 不得再出現 `code-review-graph`**,`docs/superpowers/` 下的歷史 spec 與 plan 除外。此次改動橫跨 10 個檔,半套遷移是最可能的失敗模式——留一句 SKILL 指令指向已不再偵測的工具,不會有任何測試變紅。
 
-## 實作時必須實測(不准用猜的)
+## 版本相依
 
-1. **`ocr delegate rule` 對各副檔名的實際行為**:餵一個 `.ts`、一個 `.test.ts`、一個 `.md`、一個 `.sh`、一個 `fixtures/parity/*.json`,把實際輸出記進本 spec,取代目前的推測。
-2. **`command -v ocr` 裝完後確實成立**。caveman 的教訓:假設過一次,錯了整個偵測是壞的而沒人發現。
-3. **OCR 是否寫 repo 內檔案**(它有 `ocr session list`,session 狀態位置未知)。有的話要進 `.gitignore` 並補 `test_packaging.py` 斷言——正好對應被移除的 `.code-review-graph/` 那條。
-4. **`ocr delegate rule` 在真實檔案清單上的耗時**,用以決定降級的 timeout 閾值。
+以上實測基於 **ocr v1.8.4**(2026-08-01 build)。該 repo 目前每日仍在更新,規則集內容與分組行為可能隨版本變動。
+
+本設計對此的耐受來自「dev-loop 不解析 OCR 輸出」:規則文字改了不會弄壞任何 parser。但兩項裁決是**綁在觀測到的行為上**的,升級時要重看:`.json` 的排除(理由是那條規則的具體內容)、以及 `.test.ts` 與 `.ts` 共用規則組(這是整個設計成立的前提)。
 
 ## 不做
 
@@ -125,4 +164,4 @@ OCR 自帶 `.claude-plugin/` 與 `delegate-review.md` 命令。不接,只用 CLI
 - 不採用 `ocr review`(它自己的 LLM 路徑),不新增 API key 或計費路徑
 - 不保留 CRG 作為並存的第二個可選工具
 - 不碰引擎(`plugins/dev-loop/devloop/` 與 `plugins/dev-loop/src/`)——本設計只動 SKILL.md、README、command doc、`check-deps.sh`、`.gitignore` 與測試,與 L1 TS 移植線無交集,可獨立進出
-- 不自訂 OCR 規則(`--rule-path` 存在,但先用內建規則集;要不要加 dev-loop 專屬規則另議)
+- 不自訂 OCR 規則(`--rule-path` 存在,先用內建規則集)。實測給了它日後值得做的具體證據:`.md` 與 `.sh` 拿到的通用組會問 bash 腳本有沒有 SQL injection,而 `.json` 那條已經到了必須排除的程度。真正對本專案有價值的規則是這條線自己踩出來的——`pyGet`/`pyTruthy`/`pyIndex` 三件套、「變異測試的取代與新增是兩回事」、「`expect_throws` 只驗有沒有拋錯」——那些沒有任何通用規則集會有。另議。
