@@ -1,0 +1,32 @@
+{
+  "runGate": [
+    { "name": "no commands passes vacuously",
+      "commands": [], "outcomes": [], "timeout": 600,
+      "expect": { "passed": true, "failed_command": null, "output": "" } },
+    { "name": "all commands pass",
+      "commands": [["a"], ["b"]],
+      "outcomes": [{ "code": 0 }, { "code": 0 }], "timeout": 600,
+      "expect": { "passed": true, "failed_command": null, "output": "" } },
+    { "name": "the second command fails and short-circuits",
+      "commands": [["a"], ["b"], ["c"]],
+      "outcomes": [{ "code": 0 }, { "code": 1, "stdout": "out\n", "stderr": "err\n" }],
+      "timeout": 600,
+      "expect": { "passed": false, "failed_command": ["b"], "output": "out\nerr\n" } },
+    { "name": "stdout comes before stderr in the reported output",
+      "commands": [["a"]],
+      "outcomes": [{ "code": 1, "stdout": "S", "stderr": "E" }], "timeout": 600,
+      "expect": { "passed": false, "failed_command": ["a"], "output": "SE" } },
+    { "name": "a timeout is a failure of that command, not a crash",
+      "commands": [["slow"]],
+      "outcomes": [{ "timed_out": true }], "timeout": 1,
+      "expect": { "passed": false, "failed_command": ["slow"], "output": "timeout after 1s" } },
+    { "name": "the timeout value appears in the message",
+      "commands": [["slow"]],
+      "outcomes": [{ "timed_out": true }], "timeout": 600,
+      "expect": { "passed": false, "failed_command": ["slow"], "output": "timeout after 600s" } },
+    { "name": "a later command is not run after a failure",
+      "commands": [["a"], ["b"]],
+      "outcomes": [{ "code": 2, "stdout": "", "stderr": "" }], "timeout": 600,
+      "expect": { "passed": false, "failed_command": ["a"], "output": "" } }
+  ]
+}
