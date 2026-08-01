@@ -1,0 +1,27 @@
+{
+  "parseWorktreePaths": [
+    { "name": "no linked worktrees leaves only the main one",
+      "porcelain": "worktree /repo\nHEAD abc\nbranch refs/heads/main\n",
+      "repo_resolved": "/repo",
+      "expect": { "value": [] } },
+    { "name": "one linked worktree",
+      "porcelain": "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/.wt/a\nHEAD abc\nbranch refs/heads/a\n",
+      "repo_resolved": "/repo",
+      "expect": { "value": ["/repo/.wt/a"] } },
+    { "name": "two linked worktrees keep their order",
+      "porcelain": "worktree /repo\n\nworktree /repo/.wt/b\n\nworktree /repo/.wt/a\n",
+      "repo_resolved": "/repo",
+      "expect": { "value": ["/repo/.wt/b", "/repo/.wt/a"] } },
+    { "name": "empty output yields nothing",
+      "porcelain": "", "repo_resolved": "/repo",
+      "expect": { "value": [] } },
+    { "name": "lines that are not worktree lines are ignored",
+      "porcelain": "worktree /repo\nHEAD abc\nbare\ndetached\n",
+      "repo_resolved": "/repo",
+      "expect": { "value": [] } },
+    { "name": "a path with spaces survives",
+      "porcelain": "worktree /repo\n\nworktree /repo/.wt/a b\n",
+      "repo_resolved": "/repo",
+      "expect": { "value": ["/repo/.wt/a b"] } }
+  ]
+}
