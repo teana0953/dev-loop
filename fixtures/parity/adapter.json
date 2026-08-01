@@ -1,0 +1,83 @@
+{
+  "runWatcher": [
+    {
+      "name": "an immediate success stops without sleeping",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [[0, "done"]],
+      "expect": {
+        "returned": 0,
+        "slept": [],
+        "log": [{ "exit_code": 0, "output_tail": "done", "action": "stop", "heartbeat": 60 }]
+      }
+    },
+    {
+      "name": "two failures then success sleeps twice",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [[1, "a"], [1, "b"], [0, "c"]],
+      "expect": {
+        "returned": 0,
+        "slept": [60, 60],
+        "log": [
+          { "exit_code": 1, "output_tail": "a", "action": "retry", "heartbeat": 60 },
+          { "exit_code": 1, "output_tail": "b", "action": "retry", "heartbeat": 60 },
+          { "exit_code": 0, "output_tail": "c", "action": "stop", "heartbeat": 60 }
+        ]
+      }
+    },
+    {
+      "name": "heartbeat is clamped to the wakeup ceiling, and the log records the clamped value",
+      "exec_command": ["x"], "heartbeat": 99999,
+      "outcomes": [[1, ""], [0, ""]],
+      "expect": {
+        "returned": 0,
+        "slept": [3600],
+        "log": [
+          { "exit_code": 1, "output_tail": "", "action": "retry", "heartbeat": 3600 },
+          { "exit_code": 0, "output_tail": "", "action": "stop", "heartbeat": 3600 }
+        ]
+      }
+    },
+    {
+      "name": "a bare exit code with no tail is accepted",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [0],
+      "expect": {
+        "returned": 0, "slept": [],
+        "log": [{ "exit_code": 0, "output_tail": "", "action": "stop", "heartbeat": 60 }]
+      }
+    },
+    {
+      "name": "a heartbeat below the ceiling is used as given",
+      "exec_command": ["x"], "heartbeat": 1,
+      "outcomes": [[1, ""], [0, ""]],
+      "expect": {
+        "returned": 0, "slept": [1],
+        "log": [
+          { "exit_code": 1, "output_tail": "", "action": "retry", "heartbeat": 1 },
+          { "exit_code": 0, "output_tail": "", "action": "stop", "heartbeat": 1 }
+        ]
+      }
+    },
+    {
+      "name": "a non-zero exit that is not 1 still counts as retry",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [[42, "t"], [0, ""]],
+      "expect": {
+        "returned": 0, "slept": [60],
+        "log": [
+          { "exit_code": 42, "output_tail": "t", "action": "retry", "heartbeat": 60 },
+          { "exit_code": 0, "output_tail": "", "action": "stop", "heartbeat": 60 }
+        ]
+      }
+    }
+  ],
+
+  "noLogPath": [
+    {
+      "name": "omitting the log path writes nothing and does not raise",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [[0, "done"]],
+      "expect": { "returned": 0, "slept": [] }
+    }
+  ]
+}

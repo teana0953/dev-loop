@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import { readdirSync } from "node:fs";
 import { PARITY_DIR } from "./parityFixture.js";
 
-const CONSUMED_MODULES = new Set(["changemeta", "checkpoint", "cli", "config", "followup", "gate", "review", "shlex", "units", "worktree"]);
+const CONSUMED_MODULES = new Set(["adapter", "changemeta", "checkpoint", "cli", "config", "followup", "gate", "review", "shlex", "units", "worktree"]);
 
 describe("parity: fixture manifest", () => {
   it("every fixtures/parity/*.json module is consumed by some test file", () => {
