@@ -28,8 +28,18 @@ export function disarmWatcher(checkpointPath: string): "killed" | "absent" {
     try {
       process.kill(pid, "SIGTERM");
       result = "killed";
-    } catch {
-      result = "absent"; // 行程已死或無權限
+    } catch (e) {
+      // Python 只捕 (ProcessLookupError, PermissionError, OSError) —— 行程已死
+      // (ESRCH)或無權限(EPERM)。一個超出 pid 範圍的數字在 Python 是
+      // OverflowError(非 OSError 子類,會冒出去、unlink 不會執行);Node
+      // 對應的是 TypeError(無 .code)。只吞 ESRCH/EPERM,其餘一律往外拋,
+      // 讓損毀的狀態被看見而不是被清除證據。
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ESRCH" || code === "EPERM") {
+        result = "absent";
+      } else {
+        throw e;
+      }
     }
   }
   try {
@@ -88,9 +98,15 @@ export function sweepChangeMeta(checkpointPath: string, changeId: string): boole
   mkdirSync(dest, { recursive: true });
   try {
     renameSync(meta, join(dest, `${changeId}.json`));
-  } catch {
-    // Python 只捕 FileNotFoundError(TOCTOU:剛剛還在,現在沒了)
-    return false;
+  } catch (e) {
+    // Python 只捕 FileNotFoundError(TOCTOU:剛剛還在,現在沒了)。目的地已是
+    // 目錄(IsADirectoryError/EISDIR)或跨裝置(EXDEV)這類真正損毀的狀態要
+    // 冒出去,不能被吞成「沒東西可搬」的 false——那是謊報乾淨。
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return false;
+    }
+    throw e;
   }
   return true;
 }

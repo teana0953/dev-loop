@@ -53,6 +53,19 @@ describe("disarmWatcher", () => {
     });
     expect(exit.signal).toBe("SIGTERM");
   });
+  it("propagates on an unrepresentable pid instead of swallowing it, and leaves the pid file", () => {
+    // Python: os.kill(2**63, SIGTERM) raises OverflowError, which is NOT an
+    // OSError subclass, so it is not caught by `except (ProcessLookupError,
+    // PermissionError, OSError)` — disarm_watcher crashes and pid_path.unlink()
+    // never runs. Node's process.kill(2**63, ...) raises a TypeError with no
+    // .code; the narrowed catch (ESRCH/EPERM only) must let it through too,
+    // and the pid file must survive since we never reach unlinkSync.
+    const d = devloopDir();
+    const pid = join(d, "watcher.pid");
+    writeFileSync(pid, String(2 ** 63), "utf-8");
+    expect(() => disarmWatcher(join(d, "checkpoint.json"))).toThrow();
+    expect(existsSync(pid)).toBe(true);
+  });
 });
 
 describe("sweepChangeMeta", () => {
@@ -72,6 +85,17 @@ describe("sweepChangeMeta", () => {
   it("returns false when there is no meta", () => {
     const d = devloopDir();
     expect(sweepChangeMeta(join(d, "checkpoint.json"), "nope")).toBe(false);
+  });
+  it("propagates when the destination path is a directory instead of reporting nothing to sweep", () => {
+    // Python: Path(meta).replace(dest) raises IsADirectoryError when dest is a
+    // directory; only FileNotFoundError is caught, so this is not swallowed
+    // into `False`. Node's renameSync raises EISDIR in the same situation —
+    // the narrowed catch (ENOENT only) must let it through, not report a
+    // clean "nothing to sweep" for a genuinely corrupt archive destination.
+    const d = devloopDir();
+    writeFileSync(join(d, "changes", "c1.json"), "{}", "utf-8");
+    mkdirSync(join(d, "archive", "c1", "c1.json"), { recursive: true });
+    expect(() => sweepChangeMeta(join(d, "checkpoint.json"), "c1")).toThrow();
   });
 });
 

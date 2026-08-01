@@ -62,6 +62,22 @@ def test_disarm_watcher_malformed_pid_removes_file(tmp_path):
     assert not (tmp_path / "watcher.pid").exists()
 
 
+def test_disarm_watcher_unrepresentable_pid_raises_and_keeps_file(tmp_path):
+    # os.kill(2**63, SIGTERM) raises OverflowError, which is NOT an OSError
+    # subclass, so `except (ProcessLookupError, PermissionError, OSError)`
+    # does not catch it: disarm_watcher crashes before pid_path.unlink() runs,
+    # so the pid file survives. This is the case fix-round-1 review flagged:
+    # the TS port must propagate here too instead of quietly returning
+    # "absent" and deleting the evidence.
+    cp = tmp_path / "cp.json"
+    cp.write_text("{}")
+    pid_path = tmp_path / "watcher.pid"
+    pid_path.write_text(str(2 ** 63))
+    with pytest.raises(OverflowError):
+        disarm_watcher(cp)
+    assert pid_path.exists()
+
+
 def test_prune_orphan_worktrees_removes_under_root(repo, tmp_path):
     wt_root = repo / ".devloop" / "wt"
     add_worktree(repo, wt_root / "g1", "loop-g1", "main")
@@ -89,6 +105,20 @@ def test_sweep_change_meta_returns_false_when_no_meta(tmp_path):
     # 搬完之後再次呼叫的 idempotent 場景。
     cp = tmp_path / "checkpoint.json"; cp.write_text("{}")
     assert sweep_change_meta(cp, "nope") is False
+
+
+def test_sweep_change_meta_raises_when_destination_is_a_directory(tmp_path):
+    # Path.replace(dest) raises IsADirectoryError when dest is a directory;
+    # only FileNotFoundError is caught (the TOCTOU case). A directory sitting
+    # where the archived file should go is a genuinely corrupt state and must
+    # not be swallowed into a "nothing to sweep" False.
+    cp = tmp_path / "checkpoint.json"; cp.write_text("{}")
+    meta = tmp_path / "changes" / "c1.json"
+    meta.parent.mkdir(parents=True); meta.write_text("{}")
+    dest_clash = tmp_path / "archive" / "c1" / "c1.json"
+    dest_clash.mkdir(parents=True)
+    with pytest.raises(IsADirectoryError):
+        sweep_change_meta(cp, "c1")
 
 
 def test_delete_merged_branch_deleted_for_merged(repo):
