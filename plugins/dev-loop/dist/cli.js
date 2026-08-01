@@ -150,7 +150,11 @@ function cmdStatus(file) {
 }
 function flag(rest, name) {
   const i = rest.indexOf(name);
-  return i === -1 ? void 0 : rest[i + 1];
+  if (i === -1) {
+    return void 0;
+  }
+  const value = rest[i + 1];
+  return value === void 0 || value === "" ? void 0 : value;
 }
 function main(argv, deps = {}) {
   const delegate = deps.delegate ?? delegateToPython;
@@ -170,12 +174,15 @@ function main(argv, deps = {}) {
 `);
   return 2;
 }
-function samePath(a, b) {
+function canon(p) {
   try {
-    return realpathSync(a) === realpathSync(b);
+    return realpathSync(p);
   } catch {
-    return resolve(a) === b;
+    return resolve(p);
   }
+}
+function samePath(a, b) {
+  return canon(a) === canon(b);
 }
 var invokedPath = process.argv[1];
 if (invokedPath !== void 0 && samePath(invokedPath, fileURLToPath(import.meta.url))) {

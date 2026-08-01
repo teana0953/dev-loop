@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -109,6 +109,10 @@ describe("cli status", () => {
     },
   );
 
+  it("treats an empty --file value as missing (exit 2), matching the pre-TS behavior", () => {
+    const rc = main(["status", "--file", ""]);
+    expect(rc).toBe(2);
+  });
 });
 
 describe("command routing", () => {
@@ -136,12 +140,24 @@ describe("command routing", () => {
   });
 
   it("every command it claims is actually dispatched", () => {
-    // 清單少列一個已實作的命令,呼叫會靜默走 Python——功能正常,但「已移植」
-    // 是假的。這條測試是唯一會發現這件事的東西。
+    // 兩種不同的漂移各測一次:
+    //  - 清單少列一個已實作的命令 → 呼叫靜默走 Python(delegated 變 true)。
+    //  - 清單多列一個沒接分派分支的命令 → 落到 main() 的 `unrouted command`
+    //    分支,exit 2、印 stderr,但同樣不會呼叫 delegate——只看 delegated
+    //    抓不到這種情況(兩種情況下 delegated 都是 false),所以還要另外
+    //    斷言沒有印出 `unrouted command`。
     for (const cmd of TS_COMMANDS) {
       let delegated = false;
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       main([cmd], { delegate: () => { delegated = true; return 0; } });
+      const unrouted = stderrSpy.mock.calls.some(([msg]) =>
+        String(msg).includes("unrouted command"),
+      );
+      stderrSpy.mockRestore();
       expect(delegated, `${cmd} is in TS_COMMANDS but fell through to Python`).toBe(false);
+      expect(unrouted, `${cmd} is in TS_COMMANDS but has no dispatch branch in main()`).toBe(
+        false,
+      );
     }
   });
 });

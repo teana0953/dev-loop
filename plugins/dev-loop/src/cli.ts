@@ -74,10 +74,21 @@ function cmdStatus(file: string): number {
   return 0;
 }
 
-/** `--key value` 形式的旗標。未知形狀留給各命令自行判斷。 */
+/**
+ * `--key value` 形式的旗標。未知形狀留給各命令自行判斷。
+ *
+ * 空字串視同缺席:舊的 `status` 解析是 `i === -1 || !rest[i + 1]`,`--file ""`
+ * 會被當成缺 `--file` 回 2。這裡若只判斷 `undefined`,`--file ""` 會通過解析、
+ * 一路走到 `loadCheckpoint("")` 才炸,退出碼/錯誤訊息就跟以前不一樣了——
+ * 在這裡擋掉,Task 5 加的每個命令都自動繼承這條規則,不用各自重新推導。
+ */
 function flag(rest: string[], name: string): string | undefined {
   const i = rest.indexOf(name);
-  return i === -1 ? undefined : rest[i + 1];
+  if (i === -1) {
+    return undefined;
+  }
+  const value = rest[i + 1];
+  return value === undefined || value === "" ? undefined : value;
 }
 
 export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
@@ -102,6 +113,18 @@ export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
 }
 
 /**
+ * 儘量把路徑正規化成實體路徑;`realpathSync` 失敗(例如路徑其實不存在)時
+ * 沒有 symlink-安全的答案可言,只能退回字面路徑正規化當作盡力而為的猜測。
+ */
+function canon(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
  * bin/devloop 直接執行這個檔;測試則是 import 它。沒有這個守衛,import 會在
  * 載入當下就跑掉 main() 並呼叫 process.exit,整個測試程序就死了。
  *
@@ -110,13 +133,14 @@ export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
  * 正規化成實體路徑,argv[1] 卻保留使用者走的那條 symlink 路徑。實測過:
  * symlink 目錄下兩者不相等,守衛不成立,main() 不會執行——CLI 什麼都不印、
  * 回 0,而且沒有任何錯誤訊息。
+ *
+ * 兩邊各自獨立 canonicalize(而不是包一個 try/catch 比兩次 realpathSync)：
+ * 若只有一邊 realpathSync 失敗就整體退回 `resolve(a) === b`,b 那邊仍是
+ * realpath 過的實體路徑、a 卻是字面路徑,symlink 情境下兩者本來就不相等
+ * ——那正是這個守衛要擋下的「什麼都不印、回 0」失敗模式又重新發生一次。
  */
 function samePath(a: string, b: string): boolean {
-  try {
-    return realpathSync(a) === realpathSync(b);
-  } catch {
-    return resolve(a) === b;
-  }
+  return canon(a) === canon(b);
 }
 
 const invokedPath = process.argv[1];
