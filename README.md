@@ -23,7 +23,6 @@
    cd /your/project
    git init                       # 若還不是 git repo
    openspec init --tools claude   # 初始化 OpenSpec
-   grep -qxF '.code-review-graph/' .gitignore 2>/dev/null || echo '.code-review-graph/' >> .gitignore   # 有裝 code-review-graph 才需要,重跑不會重複加
    ```
 
 3. **起一條 loop**:在該專案的 Claude Code 裡打
@@ -64,7 +63,7 @@
 可選增益(缺了 loop 照跑,只是少了對應好處):
 
 - `caveman`——壓縮 agent 輸出省 token,裝了自動作用於 loop 內所有 subagent。安裝:`curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | bash`(需 Node ≥18)。
-- `code-review-graph`——建專案結構圖,review 階段多給 reviewer 一份「波及範圍」線索:哪些 caller/dependent/測試檔可能被這次改動牽動。安裝:`pip install code-review-graph`(需 Python 3.10+)。loop 起手會自動 build;review 步驟開始時自動 update(同一次呼叫涵蓋 apply 與此前每一輪 fix 的異動,單一事實來源);缺它則 review 退回讀整包 diff。**定位是審查品質增益,不是省 token**——dev-loop 的 review 本來就只讀 diff,改動檔每個都得審、無從再縮;圖的價值在於讓 reviewer 看得到依賴端有沒有被改壞(工具自報的 `context_savings` 是拿「掃整個 codebase」當基準,與此處基準不同,不適用)。
+- `open-code-review`——review 階段多給 reviewer 一份分檔型審查 checklist(依副檔名解析出的規則組:typo、dead code、重複邏輯、hardcoding 等)。安裝:`npm i -g @alibaba-group/open-code-review`。只用它的 `delegate rule`,**不用**它的 `delegate preview` 選檔——後者會排除測試檔與 `.md`,而 dev-loop 的 review 必須看完每個改動檔。缺它則 review 照常進行,只是少一份 checklist。
 
 裝最新版讀 `main`;要 pin 特定版本用 `#tag`(release 由 CI 依 plugin.json 的 version 自動打):
 

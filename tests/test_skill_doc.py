@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -8,132 +9,129 @@ def _text():
     return SKILL.read_text(encoding="utf-8")
 
 
-def test_skill_documents_graph_build_on_first_start():
-    t = _text()
-    assert "code-review-graph build -q" in t
-    assert ".code-review-graph/" in t
-
-
-def test_skill_documents_graph_update_before_impact():
-    """update 必須緊接在 impact 之前跑(步驟 8 開頭),這樣 apply 與每一輪 fix
-    的異動都會在 review 讀圖前補齊——只在步驟 5(apply 結束)跑一次的話,fix 輪
-    產生的檔案永遠進不了圖(fix 檔早就在下一次 update 的 diff 窗外)。"""
-    t = _text()
-    seg = _slice(t, "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "code-review-graph update -q --base" in seg
-    update_pos = seg.index("code-review-graph update -q --base")
-    impact_pos = seg.index("code-review-graph impact --files")
-    assert update_pos < impact_pos
-
-
-def test_skill_no_longer_updates_graph_at_apply_step():
-    """步驟 5 的 update 呼叫是多餘的(步驟 8 開頭已覆蓋 apply + 每輪 fix),
-    留著容易讓人以為 fix 輪的異動也會被那次 update 收到——移除以求單一事實來源。"""
-    seg = _slice(_text(), "5. **Apply", "6. **Hard gate**")
-    assert "code-review-graph update" not in seg
-
-
-def test_skill_documents_graph_impact_for_review():
-    t = _text()
-    assert "code-review-graph impact --files" in t
-    assert "impacted_files" in t
-    # Lock the flag values, not just the flag names — a future edit that
-    # changes or drops these should fail this test.
-    assert "--depth 2" in t
-    assert "--max-results 50" in t
-
-
-def test_skill_documents_impact_files_source_is_explicit():
-    """"本次改動檔" 必須有明確、可執行的來源命令,而不是留給 agent 自己猜。"""
-    t = _text()
-    assert "git diff <trunk>...HEAD --name-only" in t
-
-
 def _slice(text, start_marker, end_marker):
     start = text.index(start_marker)
     end = text.index(end_marker, start)
     return text[start:end]
 
 
-def test_skill_documents_graceful_degradation_anchor_a_build():
-    """核心迴圈第 1 點的 code-review-graph build 段必須自帶降級敘述。"""
-    seg = _slice(_text(), "順手備妥 code-review-graph", "2. **推進到卡點**")
-    assert "跳過" in seg
-    assert "忽略" in seg
+def test_skill_documents_changed_file_source_is_explicit():
+    """改動檔清單必須有明確、可執行的來源命令,而不是留給 agent 自己猜。
+    這條命令同時是 review 範圍的定義——OCR 不參與決定審哪些檔。"""
+    t = _text()
+    assert "git diff <trunk>...HEAD --name-only" in t
 
 
-def test_skill_documents_graceful_degradation_anchor_c_review():
-    """流程步驟 8 的 code-review-graph impact 段必須自帶降級敘述(退回讀整包 diff)。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "退回" in seg
-    assert "整包 diff" in seg
+REVIEW_SEG_START = "**reviewer 的閱讀材料**"
+REVIEW_SEG_END = "接著 `legs-init"
 
 
-def test_skill_documents_stale_graph_miss_falls_back_too():
-    """圖沒涵蓋這批檔時,impact 是 exit 0 + 空陣列(不是非 0 退出)——只看 exit
-    code 的降級判斷會漏接這種情況,範圍靜默塌縮成只有改動檔、reviewer 少看波及檔
-    也沒人知道。必須把「impacted_files 與 changed_nodes 皆空」也當成退回讀整包
-    diff 的觸發條件。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "changed_nodes" in seg
-    assert "impacted_files" in seg
-    assert "退回現行做法" in seg
-    # 降級句要同時覆蓋「非 0 退出」與「兩個陣列皆空」兩種觸發條件
-    assert "皆為空" in seg or "都是空" in seg or "均為空" in seg
+def test_skill_documents_ocr_rule_lookup_for_review():
+    """review 段必須有可執行的 ocr 命令,而不是泛泛說「用 OCR」。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "ocr delegate rule" in seg
+    assert "command -v ocr" in seg
 
 
-def test_skill_clarifies_two_explicit_reading_inputs_for_legs():
-    """兩個輸入必須攤開寫清楚:(a) 範圍化 diff 看改了什麼,(b) 波及檔(不在改動集合
-    裡的 impacted_files)的檔名清單當留意清單——而不是把每個波及檔的全文都塞進去
-    (那正是 Item 1 修的病灶),也不是什麼提示都沒有。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "git diff <trunk>...HEAD -- " in seg
-    assert "檔名清單" in seg
+def test_skill_ocr_section_documents_degradation():
+    """沿用既有規矩:每個可選工具段落都要能自證降級,不能只在別處交代。三個
+    具體觸發條件(不在 PATH、非 0 退出、逾時)都要點名,連逾時秒數都要釘住——
+    悄悄改掉其中一個觸發條件或秒數,不該還能通過這條測試。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "降級" in seg
+    assert "恆不可裁" in seg
+    assert "不在 PATH" in seg
+    assert "非 0 退出" in seg
+    assert "逾時(30 秒)" in seg
 
 
-def test_skill_review_scope_a_is_honest_about_no_reduction():
-    """<改動檔...> 本來就是 `git diff --name-only` 的完整輸出,對它做 `-- <這些檔案>`
-    限制沒有縮小效果,必然等於不加限制的整包 diff。文件不能假裝這塊有縮小範圍——必須
-    明講「沒有縮小效果」,否則讀者會誤以為 (a) 本身就達成了省 token 的目的。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "誠實說明" in seg
-    assert "沒有縮小效果" in seg
+def test_skill_review_scope_is_not_narrowed():
+    """這整個改動存在的理由:diff 範圍必須看完每個真的改了的檔案,而且文字
+    不能宣稱或暗示這個範圍被縮小了。這是先前舊審查工具的兩條測試
+    (test_skill_review_scope_a_is_honest_about_no_reduction、
+    test_skill_review_scope_bounded_not_more_than_fallback)在守的不變量,換了
+    工具之後這條不變量還在,必須繼續有測試釘住——否則未來有人悄悄加回
+    `-- <改動檔...>` 這類過濾,或把「不縮小」那句話改弱,整條測試套件不會有
+    任何一條抓到。
+
+    只斷言兩句話存在不夠:mutation-proven 過——把讀取材料換成
+    `delegate preview` 為底的一對命令、兩句話原封不動留著,7 條測試照樣全過。
+    這裡額外正面釘住「無過濾的 git diff 是獨立一個 fenced block」,並負面
+    排除路徑過濾形式(`git diff <trunk>...HEAD -- `)與段落外的
+    `delegate preview` 提及(唯一合法出現處是禁止使用它選檔的那句)。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "審查必須看完每個真的改了的檔案" in seg
+    assert "這個範圍不縮小,也不假裝縮小" in seg
+    # 正面:無過濾的 git diff 必須自成一個 fenced block(而不是被
+    # `delegate preview` 為底的命令取代)。
+    assert re.search(r"```\n\s*git diff <trunk>\.\.\.HEAD\n\s*```", seg)
+    # 負面:不得出現路徑過濾形式的 diff(縮小審查範圍)。
+    assert "git diff <trunk>...HEAD -- " not in seg
+    # 負面:`delegate preview` 只准出現在「不要用它選檔」那一句禁止性提及裡,
+    # 不能有第二處(例如被拿去當閱讀材料的來源)。
+    assert seg.count("delegate preview") == 1
+    assert "不要用它選檔" in seg
 
 
-def test_skill_review_scope_b_is_filename_list_not_full_content():
-    """波及範圍(blast radius)只該給檔名清單當留意清單,由 reviewer 自行用 Read 工具
-    按需打開;不該無條件把每個波及檔的全文預先塞進 prompt——後者正是舊版「比整包 diff
-    還多」的病灶(全部改動檔的 diff 之外,還無條件外加每個波及檔的全文)。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "檔名清單" in seg
-    assert "不要" in seg
-    assert "整份塞進 prompt" in seg
+def test_skill_excludes_json_from_ocr_rule_lookup():
+    """.json 的規則是「忽略 json-values 的內容」,而 fixtures/parity/*.json
+    的意義全在 value——那句指令不得進 reviewer 的 prompt。必須連理由一起寫,
+    否則日後有人會以為這是隨手加的例外而拿掉。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "排除 .json" in seg
+    assert "json-values" in seg
 
 
-def test_skill_review_scope_bounded_not_more_than_fallback():
-    """修完後的核心要求:總材料在常態(波及檔清單為空,常見於範圍收斂的 TDD 改動)下
-    與退回讀整包 diff **完全等量**,其餘情況只多一份可忽略的檔名清單——不能讓文件繼續
-    宣稱或暗示這條路徑比整包 diff 讀得更多(舊版的實際病灶),也不能空泛宣稱「一定比
-    整包 diff 少」這種在單一 reviewer 需審完所有改動檔前提下辦不到的事。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "完全等量" in seg
-    assert "不會更多" in seg
+def test_skill_says_ocr_does_not_select_files():
+    """OCR 的 delegate preview 會排除測試檔與 .md。SKILL 必須明講不用它選檔,
+    否則日後照官方流程「補上 preview」會靜默縮小審查範圍。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "加法,不是減法" in seg
+    assert "delegate preview" in seg
+    assert "不要用它選檔" in seg
 
 
-def test_skill_no_longer_claims_context_savings_reduces_scope():
-    """`context_savings` 是 code-review-graph 工具自估的省 token 量,比較基準是「不用圖
-    時得掃整個 codebase 找關聯」,跟本文自己的退回基準(讀整包 diff)不是同一件事——
-    本文不該再拿它當「範圍比整包 diff 小」的佐證,只能如實描述它是工具自估、僅供參考
-    以外的用途已被移除。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "context_savings" in seg
-    assert "不是同一件事" in seg
+def test_skill_warns_ocr_arg_error_is_silent():
+    """傳參錯誤時 ocr exit 0 並回通用規則組,沒有錯誤訊號——這個坑必須寫在
+    命令旁邊,因為它無法靠 exit code 偵測。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "獨立參數" in seg
+    assert "exit 0" in seg
 
 
-def test_skill_documents_impacted_files_path_normalization():
-    """impacted_files 是絕對路徑,git diff --name-only 是 repo-relative——兩者
-    直接聯集會讓同一個檔案用兩種寫法各算一次。必須明講要先正規化成 repo-relative
-    再比較/聯集。"""
-    seg = _slice(_text(), "先決定 reviewer 的閱讀範圍", "接著 `legs-init")
-    assert "絕對路徑" in seg
-    assert "正規化" in seg or "normalize" in seg.lower()
+def test_skill_gives_executable_file_list_pipeline():
+    """`ocr delegate rule <上一步輸出的檔案,排除 .json>` 是佔位符,不是可執行
+    命令——這段唯一有靜默失敗模式(整串路徑當一個參數傳入,exit 0 且無錯誤
+    訊號),不能留給 agent 臨場拼湊。SKILL 必須給出檔案清單 → 過濾 → 陣列展開
+    的完整可執行 pipeline,且要對 bash 與 zsh 都穩(專案預設 zsh,未加引號的
+    參數展開不斷詞)。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "grep -v" in seg
+    assert '"${FILES[@]}"' in seg
+    assert "zsh" in seg
+    assert "ocr delegate rule \"${FILES[@]}\"" in seg
+    # 佔位符形式不該再出現。
+    assert "<上一步輸出的檔案,排除 .json>" not in seg
+
+
+def test_skill_delivers_ocr_output_verbatim_into_code_leg_only():
+    """這是讓整個整合真的產生效果的唯一句子:輸出原樣併進 code leg 的
+    prompt,uiux leg 不給。mutation-proven——刪掉這句,7 條既有測試全過,
+    因為其餘 6 條只守「呼叫」,沒有一條守「消費」。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "原樣" in seg
+    assert "併進" in seg
+    assert "code leg" in seg
+    assert "uiux leg 不給" in seg
+
+
+def test_skill_verifies_ocr_output_before_trusting_it():
+    """`ocr` 是三個字母的通用名字,PATH 上可能有同名的其他工具(OCR 文字
+    辨識、個人腳本、alias)。降級只在非 0 退出時觸發;一個剛好 exit 0 的假
+    `ocr` 會把任意文字原樣塞進 reviewer 的 prompt(見上一條測試——輸出是
+    原樣併入,不解析)。SKILL 必須在使用輸出前驗證來源,並把驗證失敗列為
+    降級觸發之一。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "### Rule Group" in seg
+    assert "驗證輸出" in seg
+    assert "輸出不含 `### Rule Group`" in seg

@@ -10,8 +10,8 @@ command -v openspec >/dev/null 2>&1 || missing+=("openspec(npm i -g @fission-ai/
 if [ ${#missing[@]} -gt 0 ]; then
   printf 'dev-loop 前置缺少:%s\n' "${missing[*]}"
 fi
-# 可選增益:缺了 loop 照跑(caveman 不壓縮;code-review-graph 的 build/update
-# 與 review 選檔靜默略過、退回讀整包 diff),故與硬前置分開列。
+# 可選增益:缺了 loop 照跑(caveman 不壓縮;open-code-review 的審查 checklist
+# 靜默略過,review 照常進行),故與硬前置分開列。
 # 只對「已在用 dev-loop 的專案」(有 .devloop/)發出,理由同下面 openspec init
 # 提示的註解:避免對其他專案每個 session 注入噪音。
 if [ -d .devloop ]; then
@@ -25,7 +25,7 @@ if [ -d .devloop ]; then
     && [ ! -d "$claude_config_dir/plugins/marketplaces/caveman" ]; then
     optional+=("caveman(省 output token;裝法見 README)")
   fi
-  command -v code-review-graph >/dev/null 2>&1 || optional+=("code-review-graph(review 選檔;pip install code-review-graph)")
+  command -v ocr >/dev/null 2>&1 || optional+=("open-code-review(review checklist;npm i -g @alibaba-group/open-code-review)")
   if [ ${#optional[@]} -gt 0 ]; then
     printf 'dev-loop 可選增益未安裝:%s\n' "${optional[*]}"
   fi
