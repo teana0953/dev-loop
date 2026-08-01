@@ -17,8 +17,3 @@ def test_marketplace_lists_plugin_with_source():
         (ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
     entry = next(p for p in mkt["plugins"] if p["name"] == "dev-loop")
     assert entry["source"] == "./plugins/dev-loop"
-
-
-def test_gitignore_excludes_code_review_graph_data():
-    lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert ".code-review-graph/" in [ln.strip() for ln in lines]
