@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# dev-loop 引擎 wrapper:自定位 plugin/repo 根(bin/ 的上一層),設 PYTHONPATH 後轉呼叫 CLI。
+# dev-loop 引擎 wrapper:自定位 plugin 根(bin/ 的上一層),轉呼叫 TS 引擎。
+# TS 認得的子命令由它自己處理,其餘由 cli.ts 委派回 python3 -m devloop.cli
+# (PYTHONPATH 也在那裡設)。dist/cli.js 是 commit 進版控的自足 bundle,
+# 使用者不需要跑 npm install。
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = plugins/dev-loop(內含 devloop/)
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m devloop.cli "$@"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = plugins/dev-loop
+exec node "$ROOT/dist/cli.js" "$@"

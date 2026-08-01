@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # dev-loop 首跑檢查:缺工具/專案未就緒只提示不阻斷(exit 0)。
 missing=()
+# node 是引擎進入點:bin/devloop 直接 exec node dist/cli.js,缺它連未移植的
+# 子命令都跑不到(它們是由 TS 委派回 python3 的)。
+command -v node     >/dev/null 2>&1 || missing+=("node(18+)")
 command -v python3  >/dev/null 2>&1 || missing+=("python3")
 command -v git      >/dev/null 2>&1 || missing+=("git")
 command -v openspec >/dev/null 2>&1 || missing+=("openspec(npm i -g @fission-ai/openspec)")

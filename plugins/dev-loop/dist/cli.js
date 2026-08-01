@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+// src/cli.ts
+import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { constants } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 // src/jsonio.ts
 import { readFileSync } from "node:fs";
 function readJsonObject(path, label) {
@@ -103,6 +110,23 @@ function nextHint(phase, checkpointPath, opts = {}) {
 }
 
 // src/cli.ts
+var TS_COMMANDS = ["status"];
+function delegateToPython(argv) {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const sep = process.platform === "win32" ? ";" : ":";
+  const existing = process.env.PYTHONPATH;
+  const proc = spawnSync("python3", ["-m", "devloop.cli", ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, PYTHONPATH: existing ? `${root}${sep}${existing}` : root }
+  });
+  if (proc.error) {
+    throw proc.error;
+  }
+  if (proc.signal) {
+    return 128 + (constants.signals[proc.signal] ?? 0);
+  }
+  return proc.status ?? 1;
+}
 function cmdStatus(file) {
   const cp = loadCheckpoint(file);
   const hint = nextHint(cp.phase, file, {
@@ -124,18 +148,40 @@ function cmdStatus(file) {
   }
   return 0;
 }
-function main(argv) {
+function flag(rest, name) {
+  const i = rest.indexOf(name);
+  return i === -1 ? void 0 : rest[i + 1];
+}
+function main(argv, deps = {}) {
+  const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
+  if (cmd === void 0 || !TS_COMMANDS.includes(cmd)) {
+    return delegate(argv);
+  }
   if (cmd === "status") {
-    const i = rest.indexOf("--file");
-    if (i === -1 || !rest[i + 1]) {
+    const file = flag(rest, "--file");
+    if (file === void 0) {
       process.stderr.write("status requires --file\n");
       return 2;
     }
-    return cmdStatus(rest[i + 1]);
+    return cmdStatus(file);
   }
-  process.stderr.write(`unknown command: ${cmd ?? ""}
+  process.stderr.write(`unrouted command: ${cmd}
 `);
   return 2;
 }
-process.exit(main(process.argv.slice(2)));
+function samePath(a, b) {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === b;
+  }
+}
+var invokedPath = process.argv[1];
+if (invokedPath !== void 0 && samePath(invokedPath, fileURLToPath(import.meta.url))) {
+  process.exit(main(process.argv.slice(2)));
+}
+export {
+  TS_COMMANDS,
+  main
+};
