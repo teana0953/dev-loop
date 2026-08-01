@@ -1,0 +1,175 @@
+{
+  "classify": [
+    { "name": "no findings means nothing blocking", "findings": [], "expect": { "value": "review_no_blocking" } },
+    {
+      "name": "only non-blocking findings",
+      "findings": [{ "severity": "non_blocking", "note": "tidy" }],
+      "expect": { "value": "review_no_blocking" }
+    },
+    {
+      "name": "a finding with no severity key is not blocking",
+      "findings": [{ "level": "code" }],
+      "expect": { "value": "review_no_blocking" }
+    },
+    {
+      "name": "blocking code finding routes to fix",
+      "findings": [{ "severity": "blocking", "level": "code" }],
+      "expect": { "value": "review_blocking_code" }
+    },
+    {
+      "name": "a blocking finding with no level defaults to code",
+      "findings": [{ "severity": "blocking" }],
+      "expect": { "value": "review_blocking_code" }
+    },
+    {
+      "name": "blocking proposal finding takes the escape hatch",
+      "findings": [{ "severity": "blocking", "level": "proposal" }],
+      "expect": { "value": "review_blocking_proposal" }
+    },
+    {
+      "name": "proposal outranks code when both are blocking",
+      "findings": [
+        { "severity": "blocking", "level": "code" },
+        { "severity": "blocking", "level": "proposal" }
+      ],
+      "expect": { "value": "review_blocking_proposal" }
+    },
+    {
+      "name": "a non-blocking proposal finding does not trigger the escape hatch",
+      "findings": [
+        { "severity": "blocking", "level": "code" },
+        { "severity": "non_blocking", "level": "proposal" }
+      ],
+      "expect": { "value": "review_blocking_code" }
+    }
+  ],
+
+  "classifyProposal": [
+    { "name": "no findings is clean", "findings": [], "expect": { "value": "propose_clean" } },
+    {
+      "name": "only non-blocking findings is clean",
+      "findings": [{ "severity": "non_blocking" }],
+      "expect": { "value": "propose_clean" }
+    },
+    {
+      "name": "blocking design finding escalates",
+      "findings": [{ "severity": "blocking", "level": "design" }],
+      "expect": { "value": "propose_blocking_design" }
+    },
+    {
+      "name": "blocking proposal finding goes back to propose",
+      "findings": [{ "severity": "blocking", "level": "proposal" }],
+      "expect": { "value": "propose_blocking_proposal" }
+    },
+    {
+      "name": "design outranks proposal when both are blocking",
+      "findings": [
+        { "severity": "blocking", "level": "proposal" },
+        { "severity": "blocking", "level": "design" }
+      ],
+      "expect": { "value": "propose_blocking_design" }
+    },
+    {
+      "name": "a blocking finding with no level goes back to propose",
+      "findings": [{ "severity": "blocking" }],
+      "expect": { "value": "propose_blocking_proposal" }
+    }
+  ],
+
+  "classifyQa": [
+    { "name": "no findings passes", "findings": [], "expect": { "value": "qa_pass" } },
+    {
+      "name": "only non-blocking findings passes",
+      "findings": [{ "severity": "non_blocking" }],
+      "expect": { "value": "qa_pass" }
+    },
+    {
+      "name": "any blocking finding fails, regardless of level",
+      "findings": [{ "severity": "blocking", "level": "proposal" }],
+      "expect": { "value": "qa_fail" }
+    }
+  ],
+
+  "nonBlockingNotes": [
+    { "name": "no findings means no notes", "findings": [], "expect": { "value": [] } },
+    {
+      "name": "collects only non-blocking notes, in order",
+      "findings": [
+        { "severity": "non_blocking", "note": "x" },
+        { "severity": "blocking", "note": "y" },
+        { "severity": "non_blocking", "note": "z" }
+      ],
+      "expect": { "value": ["x", "z"] }
+    },
+    {
+      "name": "an absent note becomes an empty string",
+      "findings": [{ "severity": "non_blocking" }],
+      "expect": { "value": [""] }
+    }
+  ],
+
+  "parseReviewReport": [
+    {
+      "name": "a valid report yields its findings",
+      "input": { "findings": [{ "severity": "blocking", "level": "code", "note": "bug" }] },
+      "expect": { "value": [{ "severity": "blocking", "level": "code", "note": "bug" }] }
+    },
+    {
+      "name": "empty findings is valid and means pass",
+      "input": { "findings": [] },
+      "expect": { "value": [] }
+    },
+    { "name": "a missing file is rejected", "file_absent": true, "expect_throws": true },
+    { "name": "an array root is rejected", "input": [], "expect_throws": true },
+    { "name": "a null root is rejected", "input": null, "expect_throws": true },
+    { "name": "a missing findings key is rejected", "input": { "items": [] }, "expect_throws": true },
+    { "name": "findings as an object is rejected", "input": { "findings": {} }, "expect_throws": true },
+    {
+      "name": "a non-object finding is rejected",
+      "input": { "findings": ["oops"] },
+      "expect_throws": true
+    },
+    {
+      "name": "a missing severity is rejected",
+      "input": { "findings": [{ "level": "code" }] },
+      "expect_throws": true
+    },
+    {
+      "name": "an unknown severity is rejected",
+      "input": { "findings": [{ "severity": "critical" }] },
+      "expect_throws": true
+    },
+    {
+      "name": "a non-string note is rejected",
+      "input": { "findings": [{ "severity": "non_blocking", "note": 42 }] },
+      "expect_throws": true
+    },
+    {
+      "name": "an absent note is valid",
+      "input": { "findings": [{ "severity": "blocking" }] },
+      "expect": { "value": [{ "severity": "blocking" }] }
+    }
+  ],
+
+  "aggregateFindings": [
+    { "name": "no reports means no findings", "inputs": [], "expect": { "value": [] } },
+    {
+      "name": "concatenates in report order",
+      "inputs": [
+        { "findings": [{ "severity": "blocking", "note": "a" }] },
+        { "findings": [{ "severity": "non_blocking", "note": "b" }] }
+      ],
+      "expect": {
+        "value": [
+          { "severity": "blocking", "note": "a" },
+          { "severity": "non_blocking", "note": "b" }
+        ]
+      }
+    },
+    {
+      "name": "one bad report rejects the whole aggregate",
+      "inputs": [{ "findings": [] }, { "findings": [{ "severity": "critical" }] }],
+      "expect_throws": true
+    }
+  ]
+}
