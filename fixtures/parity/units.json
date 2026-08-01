@@ -1,0 +1,138 @@
+{
+  "buildUnits": [
+    {
+      "name": "empty groups yield no units",
+      "parallel_groups": [], "branch": "feat/x", "wt_root": ".devloop/wt",
+      "expect": { "value": [] }
+    },
+    {
+      "name": "absent tasks defaults to an empty list",
+      "parallel_groups": [{ "id": "g1" }], "branch": "feat/x", "wt_root": ".devloop/wt",
+      "expect": {
+        "value": [{
+          "id": "g1", "tasks": [], "worktree": ".devloop/wt/g1",
+          "branch": "feat/x-g1", "status": "pending"
+        }]
+      }
+    },
+    {
+      "name": "explicit null tasks is preserved, not defaulted",
+      "parallel_groups": [{ "id": "g1", "tasks": null }], "branch": "feat/x", "wt_root": ".devloop/wt",
+      "expect": {
+        "value": [{
+          "id": "g1", "tasks": null, "worktree": ".devloop/wt/g1",
+          "branch": "feat/x-g1", "status": "pending"
+        }]
+      }
+    },
+    {
+      "name": "tasks pass through unchanged",
+      "parallel_groups": [{ "id": "g1", "tasks": ["a", "b"] }], "branch": "b", "wt_root": "w",
+      "expect": {
+        "value": [{
+          "id": "g1", "tasks": ["a", "b"], "worktree": "w/g1",
+          "branch": "b-g1", "status": "pending"
+        }]
+      }
+    },
+    {
+      "name": "two groups get one worktree and branch each",
+      "parallel_groups": [{ "id": "a" }, { "id": "b" }], "branch": "feat/x", "wt_root": "w",
+      "expect": {
+        "value": [
+          { "id": "a", "tasks": [], "worktree": "w/a", "branch": "feat/x-a", "status": "pending" },
+          { "id": "b", "tasks": [], "worktree": "w/b", "branch": "feat/x-b", "status": "pending" }
+        ]
+      }
+    },
+    {
+      "name": "a group without an id is rejected",
+      "parallel_groups": [{ "tasks": [] }], "branch": "b", "wt_root": "w",
+      "expect_throws": true
+    }
+  ],
+
+  "pendingUnits": [
+    {
+      "name": "no units means nothing pending",
+      "units": [],
+      "expect": { "value": [] }
+    },
+    {
+      "name": "pending and in_progress both count as pending",
+      "units": [
+        { "id": "a", "status": "pending" }, { "id": "b", "status": "in_progress" },
+        { "id": "c", "status": "done" }, { "id": "d", "status": "merged" },
+        { "id": "e", "status": "failed" }
+      ],
+      "expect": { "value": [{ "id": "a", "status": "pending" }, { "id": "b", "status": "in_progress" }] }
+    },
+    {
+      "name": "a unit without a status is rejected",
+      "units": [{ "id": "a" }],
+      "expect_throws": true
+    }
+  ],
+
+  "mark": [
+    {
+      "name": "marks the named unit in place",
+      "units": [{ "id": "a", "status": "pending" }, { "id": "b", "status": "pending" }],
+      "unit_id": "b", "status": "done",
+      "expect": { "value": [{ "id": "a", "status": "pending" }, { "id": "b", "status": "done" }] }
+    },
+    {
+      "name": "marks only the first match and stops",
+      "units": [{ "id": "a", "status": "pending" }, { "id": "a", "status": "pending" }],
+      "unit_id": "a", "status": "done",
+      "expect": { "value": [{ "id": "a", "status": "done" }, { "id": "a", "status": "pending" }] }
+    },
+    {
+      "name": "an unknown unit id is rejected",
+      "units": [{ "id": "a", "status": "pending" }],
+      "unit_id": "zz", "status": "done",
+      "expect_throws": true
+    }
+  ],
+
+  "allDone": [
+    {
+      "name": "no units is NOT all done",
+      "units": [],
+      "expect": { "value": false }
+    },
+    {
+      "name": "done and merged both count as done",
+      "units": [{ "id": "a", "status": "done" }, { "id": "b", "status": "merged" }],
+      "expect": { "value": true }
+    },
+    {
+      "name": "one pending unit is not all done",
+      "units": [{ "id": "a", "status": "done" }, { "id": "b", "status": "pending" }],
+      "expect": { "value": false }
+    },
+    {
+      "name": "a unit without a status is rejected",
+      "units": [{ "id": "a" }],
+      "expect_throws": true
+    }
+  ],
+
+  "allMerged": [
+    {
+      "name": "no units is NOT all merged",
+      "units": [],
+      "expect": { "value": false }
+    },
+    {
+      "name": "done is not merged",
+      "units": [{ "id": "a", "status": "done" }, { "id": "b", "status": "merged" }],
+      "expect": { "value": false }
+    },
+    {
+      "name": "every unit merged",
+      "units": [{ "id": "a", "status": "merged" }],
+      "expect": { "value": true }
+    }
+  ]
+}
