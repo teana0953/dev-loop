@@ -46,7 +46,7 @@ def test_skill_ocr_section_documents_degradation():
 
 def test_skill_review_scope_is_not_narrowed():
     """這整個改動存在的理由:diff 範圍必須看完每個真的改了的檔案,而且文字
-    不能宣稱或暗示這個範圍被縮小了。這是先前 code-review-graph 的兩條測試
+    不能宣稱或暗示這個範圍被縮小了。這是先前舊審查工具的兩條測試
     (test_skill_review_scope_a_is_honest_about_no_reduction、
     test_skill_review_scope_bounded_not_more_than_fallback)在守的不變量,換了
     工具之後這條不變量還在,必須繼續有測試釘住——否則未來有人悄悄加回
