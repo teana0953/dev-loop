@@ -92,6 +92,24 @@
       "units": [{ "id": "a", "status": "pending" }],
       "unit_id": "zz", "status": "done",
       "expect_throws": true
+    },
+    {
+      "name": "a unit with no id that is reached before the match raises without mutating anything",
+      "units": [{ "status": "pending" }, { "id": "a", "status": "pending" }],
+      "unit_id": "a", "status": "done",
+      "expect_throws": true
+    },
+    {
+      "name": "a unit with no id after the match is never reached",
+      "units": [{ "id": "a", "status": "p" }, { "status": "p" }],
+      "unit_id": "a", "status": "done",
+      "expect": { "value": [{ "id": "a", "status": "done" }, { "status": "p" }] }
+    },
+    {
+      "name": "an unknown unit id whose search reaches a unit with no id first is rejected",
+      "units": [{ "status": "p" }],
+      "unit_id": "zz", "status": "done",
+      "expect_throws": true
     }
   ],
 
@@ -133,6 +151,11 @@
       "name": "every unit merged",
       "units": [{ "id": "a", "status": "merged" }],
       "expect": { "value": true }
+    },
+    {
+      "name": "a unit without a status is rejected",
+      "units": [{ "id": "a" }],
+      "expect_throws": true
     }
   ]
 }

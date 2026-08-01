@@ -38,7 +38,10 @@ export function pendingUnits(units: Unit[]): Unit[] {
 /** 就地改 unit 狀態;找不到 unit_id 拋錯(Python 的 KeyError)。 */
 export function mark(units: Unit[], unitId: string, status: string): void {
   for (const u of units) {
-    if (u.id === unitId) {
+    // Python: u["id"] —— 缺 id 是 KeyError,而且只在迴圈真的走到那個 unit 時才炸;
+    // 命中之後就 return,永遠不會摸到後面缺 id 的 unit。用 obj.id 讀不出這個「炸在
+    // 哪一步」的時機差,必須跟其他函式一樣走 pyIndex。
+    if (pyIndex<string>(u as unknown as Record<string, unknown>, "id") === unitId) {
       u.status = status;
       return;
     }

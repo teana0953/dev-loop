@@ -14,7 +14,7 @@ describe("mark", () => {
 });
 
 describe("buildUnits", () => {
-  it("does not alias the input groups", () => {
+  it("passes the tasks value through by reference, not by copy", () => {
     const groups = [{ id: "g1", tasks: ["a"] }];
     const built = buildUnits(groups, "b", "w");
     expect(built[0]!.tasks).toBe(groups[0]!.tasks);
