@@ -25,9 +25,20 @@ const defaultSleep: SleepFn = (seconds) =>
  * 執行續跑命令,回傳 [exit code, 輸出尾巴]。detached watcher 的 stdout 無人看,
  * 輸出改捕捉進 log 供排障。
  */
-const defaultRun: RunFn = (cmd) => {
+export const defaultRun: RunFn = (cmd) => {
   const [head, ...rest] = cmd;
   const proc = spawnSync(head as string, rest, { encoding: "utf8" });
+  // When the executable does not exist at all, spawnSync never starts a
+  // process: `status` is null and `error` carries the ENOENT. Python's
+  // subprocess.run() in the same situation raises FileNotFoundError, which
+  // run_watcher does not catch — it propagates and the watcher dies. Rethrow
+  // here to match: silently folding this into [1, ""] would make the
+  // watcher retry forever against a command that can never succeed, and the
+  // log — the only window into a detached process nobody watches — would
+  // show nothing but empty-output retries with no trace of the real cause.
+  if (proc.error) {
+    throw proc.error;
+  }
   const tail = ((proc.stdout ?? "") + (proc.stderr ?? "")).slice(-OUTPUT_TAIL_CHARS);
   return [proc.status ?? 1, tail];
 };
