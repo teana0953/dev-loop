@@ -85,22 +85,24 @@ stdout 印 alias(如 `sonnet`,dispatch 時帶為 model 參數)或 `inherit`(不�
 
    審查必須看完每個真的改了的檔案——這個範圍不縮小,也不假裝縮小。
 
-   **(可選)補上分檔型審查 checklist**:若 `command -v ocr` 成功,取本次改動檔清單,向 open-code-review 要各檔的審查規則:
+   **(可選)補上分檔型審查 checklist**:若 `command -v ocr` 成功,取本次改動檔清單(排除 .json),逐一作為獨立參數傳給 `ocr delegate rule` 換回審查規則。**此專案預設 shell 是 zsh,未加引號的參數展開不會斷詞;下面用 `while read` 建陣列的寫法在 bash 與 zsh 下行為一致**,不要圖省事把整串路徑當一個參數傳入——那樣 `ocr` 仍會 exit 0、只回傳一個通用規則組,沒有任何錯誤訊號可偵測:
 
    ```
-   git diff <trunk>...HEAD --name-only
-   ocr delegate rule <上一步輸出的檔案,排除 .json>
+   FILES=()
+   while IFS= read -r f; do FILES+=("$f"); done < <(git diff <trunk>...HEAD --name-only | grep -v '\.json$')
+   ocr delegate rule "${FILES[@]}"
    ```
+
+   **驗證輸出來源,再使用它。** `ocr` 是三個字母的通用名字,PATH 上可能有同名的其他工具(OCR 文字辨識、個人腳本、alias)——那類工具只要剛好 exit 0,輸出的任意文字就會被原樣塞進 reviewer 的 prompt。使用前確認輸出含 `### Rule Group`;不含就視同工具不是 open-code-review,照下面的降級處理。
 
    把輸出**原樣**併進 **code leg** 的 prompt(不解析、不摘要)。uiux leg 不給——它審的是 UX 驗收準則,NPE/SQL-injection 那類 checklist 對它是噪音。
 
-   三件必須照做的事:
+   兩件事的理由:
 
-   - **路徑要逐一作為獨立參數傳遞。** 把整串路徑當成單一參數傳入時,`ocr` 仍 **exit 0** 並回傳單一通用規則組,沒有任何錯誤訊號——這個錯誤無法靠 exit code 偵測,只能靠正確傳參避免。
-   - **排除 `.json`。** 該規則的內容是「檢查 json-key 的拼字、忽略 json-values 的內容」,而 `fixtures/parity/*.json` 這類檔案的意義全在 value;讓那句指令不要進 prompt。這**不影響** `.json` 檔進 review,只是不向 OCR 要它們的規則。
+   - **排除 .json。** 該規則的內容是「檢查 json-key 的拼字、忽略 json-values 的內容」,而 `fixtures/parity/*.json` 這類檔案的意義全在 value;讓那句指令不要進 prompt。這**不影響** `.json` 檔進 review,只是不向 OCR 要它們的規則。
    - **這是加法,不是減法。** OCR 只補充「該注意什麼」,不決定「審哪些檔」。檔案清單永遠是上面那條 `git diff`。OCR 自己的 `delegate preview` 會排除測試檔與 `.md`,**不要用它選檔**。
 
-   **降級(任一成立即略過整段,照常審查)**:`ocr` 不在 PATH、命令非 0 退出、或逾時(30 秒)。review 本身恆不可裁,OCR 缺席不影響 loop 推進。code leg 與 uiux leg 同吃上面那份 diff。
+   **降級(任一成立即略過整段,照常審查)**:`ocr` 不在 PATH、命令非 0 退出、逾時(30 秒)、或輸出不含 `### Rule Group`(視為講到了非預期工具,不可信)。review 本身恆不可裁,OCR 缺席不影響 loop 推進。code leg 與 uiux leg 同吃上面那份 diff。
 
    接著 `legs-init --kinds code[,uiux]`(uiux 僅當 `.devloop/changes/<id>.json` 的 `needs_uiux=true`)。對每個 leg dispatch subagent(code leg 的 model 依「Model 決策」的 review 階段、uiux=UI/UX persona,皆冷啟動、只審碼),各產報告後 `leg-done --kind <k> --report <p>`。**review 強度與 `model_profile` 聯動**:budget 模式把本 skill 的 `references/review-coverage-first.md` 整段併入 code leg prompt(coverage-first 加重審查,正本在該檔,勿即興改寫);quality 用標準審查 prompt。兩模式報告 JSON 格式與引擎接口相同。全部 collected → `review --from-legs`,引擎彙總分級前進(merge/fix/propose)。
    - `review_no_blocking` → merge(步驟 10)
