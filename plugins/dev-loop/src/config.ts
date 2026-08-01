@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readJsonObject, pyGet } from "./jsonio.js";
+import { readJsonObject, pyGet, pyTruthy } from "./jsonio.js";
 
 export interface Config {
   finish: string | null;
@@ -110,7 +110,11 @@ export function loadConfig(path: string): Config {
     // Python: bool(data.get("auto_arm", True)). Explicit `auto_arm: null`
     // is a *present* key, so Python's .get returns None (not True), and
     // bool(None) is False — the same value must come out here.
-    auto_arm: Boolean(pyGet(data, "auto_arm", true)),
+    // pyTruthy, not Boolean: JavaScript calls every object truthy while
+    // Python calls empty containers falsy, so `{"auto_arm": []}` used to mean
+    // watcher-OFF in Python and watcher-ON here, from the same file, with
+    // neither side erroring.
+    auto_arm: pyTruthy(pyGet(data, "auto_arm", true)),
     // Explicit `gate_cmds: null` must survive as null (Python's .get
     // returns the present None, not []), for validateGateCmds to reject.
     gate_cmds: pyGet(data, "gate_cmds", [] as string[]),

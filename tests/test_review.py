@@ -151,6 +151,24 @@ def test_parse_invalid_severity_raises(tmp_path):
         parse_review_report(p)
 
 
+def test_parse_non_string_note_raises(tmp_path):
+    # note 最終要被 render_followup 串進 markdown。不在解析當下擋,
+    # 它會安靜地存進 checkpoint,直到 merge 階段才炸(TS 那側甚至不炸)。
+    p = tmp_path / "r.json"
+    p.write_text(
+        json.dumps({"findings": [{"severity": "non_blocking", "note": 42}]}), encoding="utf-8"
+    )
+    with pytest.raises(ReportError, match="note"):
+        parse_review_report(p)
+
+
+def test_parse_absent_note_is_valid(tmp_path):
+    # note 是選填(non_blocking_notes 對缺席者回空字串),缺席不得當成錯誤
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"findings": [{"severity": "blocking"}]}), encoding="utf-8")
+    assert parse_review_report(p) == [{"severity": "blocking"}]
+
+
 def test_parse_empty_findings_is_valid(tmp_path):
     # 「真的沒 findings」與「格式錯」必須嚴格區分:空 list 合法
     p = tmp_path / "r.json"

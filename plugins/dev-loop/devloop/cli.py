@@ -405,15 +405,22 @@ def _cmd_finish(args):
         print("error: invalid finish value %s" % exc, file=sys.stderr)
         return 2
     print("finish: %s" % decision)
-    if decision == "merge":
-        if cp.non_blocking:
-            write_followup(args.followup, cp.non_blocking)
-            print("followup: %s" % args.followup)
-    elif decision == "pr":
-        body = render_followup(cp.non_blocking)
-        if body:
-            print("--- PR body follow-up ---")
-            print(body)
+    # non_blocking 是從 checkpoint 讀回來的,而 checkpoint 載入刻意不驗欄位型別
+    # ——手改壞的檔會在這裡才被擋下。比照上面 resolve_finish 的處理,給乾淨的
+    # 錯誤訊息而不是裸 traceback。
+    try:
+        if decision == "merge":
+            if cp.non_blocking:
+                write_followup(args.followup, cp.non_blocking)
+                print("followup: %s" % args.followup)
+        elif decision == "pr":
+            body = render_followup(cp.non_blocking)
+            if body:
+                print("--- PR body follow-up ---")
+                print(body)
+    except TypeError as exc:
+        print("error: invalid checkpoint non_blocking: %s" % exc, file=sys.stderr)
+        return 2
     return 0
 
 

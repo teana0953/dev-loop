@@ -45,6 +45,31 @@
       "expect": { "auto_arm": true }
     },
     {
+      "name": "auto_arm empty array is falsy",
+      "input": { "auto_arm": [] },
+      "expect": { "auto_arm": false }
+    },
+    {
+      "name": "auto_arm empty object is falsy",
+      "input": { "auto_arm": {} },
+      "expect": { "auto_arm": false }
+    },
+    {
+      "name": "auto_arm empty string is falsy",
+      "input": { "auto_arm": "" },
+      "expect": { "auto_arm": false }
+    },
+    {
+      "name": "auto_arm array holding a falsy element is truthy",
+      "input": { "auto_arm": [0] },
+      "expect": { "auto_arm": true }
+    },
+    {
+      "name": "auto_arm string zero is truthy",
+      "input": { "auto_arm": "0" },
+      "expect": { "auto_arm": true }
+    },
+    {
       "name": "explicit null gate_cmds survives as null for downstream validation",
       "input": { "gate_cmds": null },
       "expect": { "gate_cmds": null }
