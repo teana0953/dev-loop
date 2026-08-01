@@ -58,3 +58,18 @@ export function pyTruthy(value: unknown): boolean {
   if (typeof value === "object") return Object.keys(value).length > 0;
   return Boolean(value);
 }
+
+/**
+ * Python `data[key]` parity: a missing key raises, it does not yield
+ * `undefined`. `obj.k` / `obj["k"]` in TypeScript quietly produce
+ * `undefined`, which then flows onward as an `undefined` id or a status that
+ * matches no branch — the same silent-wrong-answer shape as `??` standing in
+ * for `dict.get`. Use this wherever the Python being ported subscripts a dict
+ * directly; use `pyGet` where it calls `.get(key, default)`.
+ */
+export function pyIndex<T>(data: Record<string, unknown>, key: string): T {
+  if (!Object.prototype.hasOwnProperty.call(data, key)) {
+    throw new Error(`KeyError: ${JSON.stringify(key)}`);
+  }
+  return data[key] as T;
+}

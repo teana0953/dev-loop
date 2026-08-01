@@ -11,7 +11,7 @@ module 集合。
 """
 from conftest import PARITY_DIR
 
-CONSUMED_MODULES = {"changemeta", "checkpoint", "config", "followup"}
+CONSUMED_MODULES = {"changemeta", "checkpoint", "cli", "config", "followup", "review", "units"}
 
 
 def test_all_parity_fixture_modules_are_consumed():

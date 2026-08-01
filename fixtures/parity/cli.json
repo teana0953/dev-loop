@@ -1,0 +1,70 @@
+{
+  "unitsStatus": [
+    {
+      "name": "lists each unit and the pending set",
+      "checkpoint": {
+        "phase": "apply", "change_id": "c1", "branch": "feat/x",
+        "units": [
+          { "id": "g1", "status": "pending" },
+          { "id": "g2", "status": "done" }
+        ]
+      },
+      "argv": ["units-status", "--file", "<CHECKPOINT>"],
+      "expect": { "stdout": "g1 pending\ng2 done\npending: g1\n", "exit_code": 0 }
+    },
+    {
+      "name": "prints a dash when nothing is pending",
+      "checkpoint": {
+        "phase": "apply", "change_id": "c1", "branch": "b",
+        "units": [{ "id": "g1", "status": "done" }]
+      },
+      "argv": ["units-status", "--file", "<CHECKPOINT>"],
+      "expect": { "stdout": "g1 done\npending: -\n", "exit_code": 0 }
+    },
+    {
+      "name": "a checkpoint with no units prints only the pending line",
+      "checkpoint": { "phase": "apply", "change_id": "c1", "branch": "b" },
+      "argv": ["units-status", "--file", "<CHECKPOINT>"],
+      "expect": { "stdout": "pending: -\n", "exit_code": 0 }
+    }
+  ],
+
+  "model": [
+    {
+      "name": "budget profile routes apply to sonnet",
+      "config": { "model_profile": "budget" },
+      "argv": ["model", "--stage", "apply", "--config", "<CONFIG>"],
+      "expect": { "stdout": "sonnet\n", "exit_code": 0 }
+    },
+    {
+      "name": "budget profile leaves review inheriting",
+      "config": { "model_profile": "budget" },
+      "argv": ["model", "--stage", "review", "--config", "<CONFIG>"],
+      "expect": { "stdout": "inherit\n", "exit_code": 0 }
+    },
+    {
+      "name": "an explicit models override wins",
+      "config": { "model_profile": "budget", "models": { "apply": "opus" } },
+      "argv": ["model", "--stage", "apply", "--config", "<CONFIG>"],
+      "expect": { "stdout": "opus\n", "exit_code": 0 }
+    },
+    {
+      "name": "no profile means inherit",
+      "config": {},
+      "argv": ["model", "--stage", "apply", "--config", "<CONFIG>"],
+      "expect": { "stdout": "inherit\n", "exit_code": 0 }
+    },
+    {
+      "name": "a missing config file means inherit",
+      "config_absent": true,
+      "argv": ["model", "--stage", "apply", "--config", "<CONFIG>"],
+      "expect": { "stdout": "inherit\n", "exit_code": 0 }
+    },
+    {
+      "name": "an invalid config exits 2 without printing a model",
+      "config": { "model_profile": "cheap" },
+      "argv": ["model", "--stage", "apply", "--config", "<CONFIG>"],
+      "expect": { "stdout": "", "exit_code": 2 }
+    }
+  ]
+}

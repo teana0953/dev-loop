@@ -45,7 +45,7 @@ def test_optional_tools_missing_reports_but_exits_zero(tmp_path):
     """caveman 未裝(乾淨的 CLAUDE_CONFIG_DIR,無 active-flag、無 marketplace 目錄)、
     code-review-graph 不在 PATH,且專案有 .devloop/ → 兩者都該被列出。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec"):
+    for name in ("node", "python3", "git", "openspec"):
         _stub(binp, name)
     empty_config = tmp_path / "claude-config-empty"
     empty_config.mkdir()
@@ -61,7 +61,7 @@ def test_optional_tools_present_no_optional_line_active_flag(tmp_path):
     """caveman 的真實安裝流程寫的是 active-flag 檔(不是 PATH 執行檔),
     code-review-graph 則確實裝到 PATH 上。兩者都在時不該印可選增益提示。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "code-review-graph"):
+    for name in ("node", "python3", "git", "openspec", "code-review-graph"):
         _stub(binp, name)
     config_dir = tmp_path / "claude-config"
     config_dir.mkdir()
@@ -74,7 +74,7 @@ def test_optional_tools_present_no_optional_line_active_flag(tmp_path):
 def test_optional_tools_present_via_marketplace_dir(tmp_path):
     """caveman 有時只留下 marketplace 目錄、沒有 active-flag,仍該算已裝。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "code-review-graph"):
+    for name in ("node", "python3", "git", "openspec", "code-review-graph"):
         _stub(binp, name)
     config_dir = tmp_path / "claude-config"
     (config_dir / "plugins/marketplaces/caveman").mkdir(parents=True)
@@ -88,7 +88,7 @@ def test_caveman_on_path_alone_is_not_considered_installed(tmp_path):
     剛好有個叫 caveman 的東西,沒有 active-flag/marketplace 目錄仍該視為未裝。
     這條鎖的是「偵測真正的安裝痕跡」這個需求,不是鎖 `command -v` 這個舊實作。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "caveman", "code-review-graph"):
+    for name in ("node", "python3", "git", "openspec", "caveman", "code-review-graph"):
         _stub(binp, name)
     empty_config = tmp_path / "claude-config-empty"
     empty_config.mkdir()
@@ -100,7 +100,7 @@ def test_caveman_on_path_alone_is_not_considered_installed(tmp_path):
 
 def test_hard_prereq_missing_still_reported_separately(tmp_path):
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "code-review-graph"):
+    for name in ("node", "python3", "git", "code-review-graph"):
         _stub(binp, name)
     config_dir = tmp_path / "claude-config"
     config_dir.mkdir()
@@ -112,11 +112,26 @@ def test_hard_prereq_missing_still_reported_separately(tmp_path):
     assert "dev-loop 可選增益未安裝:" not in out
 
 
+def test_node_missing_reported_as_hard_prereq(tmp_path):
+    """`node` 是 bin/devloop 的進入點(exec node dist/cli.js),所以跟 python3/git/
+    openspec 一樣是硬前置——缺了只提示,不阻斷(exit 0)。"""
+    binp = tmp_path / "bin"
+    for name in ("python3", "git", "openspec"):
+        _stub(binp, name)
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".caveman-active").write_text("", encoding="utf-8")
+    code, out = _run(tmp_path, f"{binp}:/usr/bin:/bin", config_dir=config_dir, devloop=True)
+    assert code == 0
+    assert "dev-loop 前置缺少:" in out
+    assert "node" in out
+
+
 def test_optional_line_suppressed_outside_devloop_project(tmp_path):
     """沒有 .devloop/ 的專案(還沒在用 dev-loop)不該被灌可選增益噪音,
     即使兩個可選工具都真的沒裝——SessionStart hook 每個專案每個 session 都會跑。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec"):
+    for name in ("node", "python3", "git", "openspec"):
         _stub(binp, name)
     empty_config = tmp_path / "claude-config-empty"
     empty_config.mkdir()
@@ -132,7 +147,7 @@ def test_home_claude_fallback_detects_caveman_when_config_dir_unset(tmp_path):
     suite 綠,但會弄壞每個沒設這個變數的使用者。這裡故意不傳 config_dir、只傳 home,
     驗證 marker 在 $HOME/.claude 下時視為已裝(不列可選增益)。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "code-review-graph"):
+    for name in ("node", "python3", "git", "openspec", "code-review-graph"):
         _stub(binp, name)
     home = tmp_path / "home-with-marker"
     (home / ".claude").mkdir(parents=True)
@@ -150,7 +165,7 @@ def test_home_claude_fallback_reports_caveman_missing_when_config_dir_unset(tmp_
     `$HOME/.claude` 下——這兩個測試合起來鎖住:有 marker 判有裝、無 marker 判沒裝,
     都要透過真正的 $HOME/.claude fallback 路徑做到。"""
     binp = tmp_path / "bin"
-    for name in ("python3", "git", "openspec", "code-review-graph"):
+    for name in ("node", "python3", "git", "openspec", "code-review-graph"):
         _stub(binp, name)
     home = tmp_path / "home-without-marker"
     (home / ".claude").mkdir(parents=True)

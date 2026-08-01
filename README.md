@@ -59,7 +59,7 @@
 
 安裝與每專案設定的步驟見上方 Quickstart;本節只補細節。
 
-前置:`python3`(3.10+)、`git`、`openspec`(`npm i -g @fission-ai/openspec`)。
+前置:`node`(18+)、`python3`(3.10+)、`git`、`openspec`(`npm i -g @fission-ai/openspec`)。引擎正在從 Python 遷移到 TypeScript,兩者目前都需要:`bin/devloop` 由 node 進入,尚未遷移的子命令由它委派回 `python3`。
 
 可選增益(缺了 loop 照跑,只是少了對應好處):
 
