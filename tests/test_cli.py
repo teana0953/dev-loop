@@ -1137,6 +1137,24 @@ def test_finish_pr_prints_body(tmp_path, capsys):
     assert "- polish ui" in out
 
 
+def test_finish_reports_a_corrupt_non_blocking_cleanly(tmp_path, capsys):
+    # checkpoint 載入刻意不驗欄位型別,所以手改壞的檔會撐到這裡才被擋。
+    # 要走 resolve_finish 那條乾淨錯誤路徑,不是裸 traceback。
+    cp_path = tmp_path / "cp.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)
+    data = json.loads(cp_path.read_text(encoding="utf-8"))
+    data["non_blocking"] = [42]
+    cp_path.write_text(json.dumps(data), encoding="utf-8")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"finish": "merge"}), encoding="utf-8")
+    meta = tmp_path / "c.json"
+    meta.write_text(json.dumps({}), encoding="utf-8")
+    rc = main(["finish", "--file", str(cp_path), "--config", str(cfg),
+               "--meta", str(meta), "--followup", str(tmp_path / "f.md")])
+    assert rc == 2
+    assert "non_blocking" in capsys.readouterr().err
+
+
 def test_finish_defaults_to_ask(tmp_path, capsys):
     cp_path = tmp_path / "cp.json"
     Checkpoint(phase="merge", change_id="c", branch="b").save(cp_path)

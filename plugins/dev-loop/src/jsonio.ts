@@ -45,6 +45,9 @@ export function pyGet<T>(data: Record<string, unknown>, key: string, default_: T
  * `"0"`, `"false"`, and `[0]` — is truthy in both languages.
  */
 export function pyTruthy(value: unknown): boolean {
+  // `undefined` is not a JSON shape — it is here only so a caller that reaches
+  // for a missing key without going through pyGet gets Python's `bool(None)`
+  // rather than a surprise.
   if (value === null || value === undefined || value === false) return false;
   // `value !== 0` also covers -0 (falsy in both languages) and NaN, which
   // JSON cannot produce but which Python considers truthy — so leaving it
