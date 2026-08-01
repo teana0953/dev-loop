@@ -116,6 +116,24 @@ def test_keep_files_are_exactly_config_and_watcher_pid():
     assert KEEP_FILES == ("config.json", "watcher.pid")
 
 
+def test_archive_workfiles_skips_dangling_symlink(tmp_path):
+    # TS 對照:a dangling symlink must be skipped, not abort the sweep.
+    # Path.is_file() returns False for a broken symlink (it follows the
+    # link and finds nothing there) -- it does not raise.
+    root = tmp_path / ".devloop"
+    root.mkdir()
+    cp = root / "checkpoint.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp)
+    (root / "a-report.json").write_text("{}", encoding="utf-8")
+    (root / "z-report.json").write_text("{}", encoding="utf-8")
+    (root / "broken-link").symlink_to(root / "does-not-exist")
+
+    archived = archive_workfiles(cp, "c")
+
+    assert archived == ["a-report.json", "z-report.json", "checkpoint.json (snapshot)"]
+    assert (root / "broken-link").is_symlink()
+
+
 # --- cli archive 整合 ---
 
 

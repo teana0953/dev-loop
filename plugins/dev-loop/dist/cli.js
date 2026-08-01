@@ -72,60 +72,6 @@ function loadCheckpoint(path) {
   return makeCheckpoint(data);
 }
 
-// src/statemachine.ts
-var DETERMINISTIC_HINTS = {
-  proposal_review: (f) => `next: devloop proposal-review --file ${f} --report <pr.json>`,
-  gate: (f) => `next: devloop gate --file ${f} --cmd "<test-cmd>" [--cmd "<lint-cmd>"]`,
-  qa: (f) => `next: devloop qa --file ${f} --report <qa.json>`,
-  review: (f) => `next: devloop review --file ${f} --from-legs`,
-  merge: (f) => `next: devloop finish --file ${f} --config <config.json> --meta <meta.json> --followup <followup.md>`
-};
-var JUDGMENT_HINTS = {
-  brainstorm: "next: dispatch brainstorming(\u7522\u51FA\u8A2D\u8A08\u6587\u4EF6,\u6279\u51C6\u5F8C propose)",
-  propose: "next: dispatch propose(\u5EFA\u7ACB OpenSpec change,\u5B8C\u6210\u5F8C event --event propose_done)",
-  apply: "next: dispatch apply(TDD \u5BE6\u4F5C tasks,\u5B8C\u6210\u5F8C event --event apply_done)",
-  fix: "next: dispatch fix(\u8655\u7406 blocking \u9805,\u5B8C\u6210\u5F8C event --event fix_done)"
-};
-var TERMINAL_HINTS = {
-  done: "next: (done)",
-  escalated: "next: (escalated)\u4EBA\u5DE5\u5347\u7D1A\u5F8C\u7E8C\u8DD1:event --event human_resume_propose \u6216 human_resume_fix"
-};
-function nextHint(phase, checkpointPath, opts = {}) {
-  const { units, reviewLegs, gateCmds, finishMode, flowProfile, needsUiux } = opts;
-  if (phase === "qa" && flowProfile === "light" && !needsUiux) {
-    return `next: devloop event --file ${checkpointPath} --event qa_skip`;
-  }
-  if (phase === "gate" && gateCmds && gateCmds.length) {
-    return `next: devloop gate --file ${checkpointPath}`;
-  }
-  if (phase === "teardown") {
-    const mode = finishMode || "<merge|pr>";
-    return `next: devloop teardown --file ${checkpointPath} --repo . --mode ${mode}`;
-  }
-  if ((phase === "apply" || phase === "fix") && units) {
-    const pending = units.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => u.id);
-    if (pending.length) {
-      return `next: units pending: ${pending.join(",")} -> devloop units-status --file ${checkpointPath}`;
-    }
-  }
-  if (phase === "review" && reviewLegs) {
-    const pendingLegs = reviewLegs.filter((l) => l.status !== "collected").map((l) => l.kind);
-    if (pendingLegs.length) {
-      return `next: legs pending: ${pendingLegs.join(",")} -> devloop leg-done --file ${checkpointPath} --kind <kind> --report <report.json>`;
-    }
-  }
-  if (Object.hasOwn(TERMINAL_HINTS, phase)) {
-    return TERMINAL_HINTS[phase];
-  }
-  if (Object.hasOwn(DETERMINISTIC_HINTS, phase)) {
-    return DETERMINISTIC_HINTS[phase](checkpointPath);
-  }
-  if (Object.hasOwn(JUDGMENT_HINTS, phase)) {
-    return JUDGMENT_HINTS[phase];
-  }
-  throw new Error(`no next hint for phase ${phase} (KeyError)`);
-}
-
 // src/openspec.ts
 import { spawnSync } from "node:child_process";
 var defaultRunner = (cmd) => {
@@ -167,7 +113,8 @@ function archiveWorkfiles(checkpointPath, changeId) {
   const names = readdirSync(root).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   for (const name of names) {
     const p = join(root, name);
-    if (!statSync(p).isFile() || keep.has(name)) {
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st === void 0 || !st.isFile() || keep.has(name)) {
       continue;
     }
     mkdirSync(dest, { recursive: true });
@@ -285,7 +232,7 @@ function loadConfig(path) {
 }
 
 // src/cli.ts
-var TS_COMMANDS = ["status", "archive", "units-status", "model"];
+var TS_COMMANDS = ["archive", "units-status", "model"];
 function delegateToPython(argv) {
   const root = dirname2(dirname2(fileURLToPath(import.meta.url)));
   const sep = process.platform === "win32" ? ";" : ":";
@@ -302,28 +249,7 @@ function delegateToPython(argv) {
   }
   return proc.status ?? 1;
 }
-function cmdStatus(file) {
-  const cp = loadCheckpoint(file);
-  const hint = nextHint(cp.phase, file, {
-    units: cp.units,
-    reviewLegs: cp.review_legs,
-    finishMode: cp.finish_mode,
-    flowProfile: cp.flow_profile,
-    needsUiux: cp.needs_uiux
-  });
-  process.stdout.write(
-    `phase=${cp.phase} iteration=${cp.iteration} change_id=${cp.change_id} branch=${cp.branch}
-`
-  );
-  process.stdout.write(`${hint}
-`);
-  if (cp.updated_at) {
-    process.stdout.write(`updated_at=${cp.updated_at}
-`);
-  }
-  return 0;
-}
-function cmdArchive(file, archive) {
+function cmdArchive(file, archive, sweep) {
   const cp = loadCheckpoint(file);
   const result = archive(cp.change_id);
   process.stdout.write(`${result.output}
@@ -332,7 +258,7 @@ function cmdArchive(file, archive) {
     return 1;
   }
   try {
-    const archived = archiveWorkfiles(file, cp.change_id);
+    const archived = sweep(file, cp.change_id);
     process.stdout.write(
       `archived workfiles: ${archived.length} -> ${join2(dirname2(file), "archive", cp.change_id)}
 `
@@ -346,11 +272,12 @@ function cmdArchive(file, archive) {
 function cmdUnitsStatus(file) {
   const cp = loadCheckpoint(file);
   const units = cp.units;
-  for (const u of units) {
-    process.stdout.write(`${u.id} ${u.status}
+  for (const raw of units) {
+    const u = raw;
+    process.stdout.write(`${pyIndex(u, "id")} ${pyIndex(u, "status")}
 `);
   }
-  const pend = pendingUnits(units).map((u) => u.id);
+  const pend = pendingUnits(units).map((raw) => pyIndex(raw, "id"));
   process.stdout.write(`pending: ${pend.length > 0 ? pend.join(",") : "-"}
 `);
   return 0;
@@ -368,13 +295,29 @@ function cmdModel(stage, configPath) {
 `);
   return 0;
 }
-function flag(rest, name) {
-  const i = rest.indexOf(name);
-  if (i === -1) {
-    return void 0;
+function parseArgs(rest, known) {
+  const values = /* @__PURE__ */ new Map();
+  const consumed = new Array(rest.length).fill(false);
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    if (known.includes(tok)) {
+      consumed[i] = true;
+      if (i + 1 < rest.length) {
+        values.set(tok, rest[i + 1]);
+        consumed[i + 1] = true;
+        i++;
+      }
+    }
   }
-  const value = rest[i + 1];
+  const unknown = rest.filter((_, i) => !consumed[i]);
+  return { values, unknown };
+}
+function requiredFlag(values, name) {
+  const value = values.get(name);
   return value === void 0 || value === "" ? void 0 : value;
+}
+function rawFlag(values, name) {
+  return values.get(name);
 }
 function main(argv, deps = {}) {
   const delegate = deps.delegate ?? delegateToPython;
@@ -382,24 +325,32 @@ function main(argv, deps = {}) {
   if (cmd === void 0 || !TS_COMMANDS.includes(cmd)) {
     return delegate(argv);
   }
-  if (cmd === "status") {
-    const file = flag(rest, "--file");
-    if (file === void 0) {
-      process.stderr.write("status requires --file\n");
+  if (cmd === "archive") {
+    const { values, unknown } = parseArgs(rest, ["--file"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
       return 2;
     }
-    return cmdStatus(file);
-  }
-  if (cmd === "archive") {
-    const file = flag(rest, "--file");
+    const file = requiredFlag(values, "--file");
     if (file === void 0) {
       process.stderr.write("archive requires --file\n");
       return 2;
     }
-    return cmdArchive(file, deps.archiveChange ?? archiveChange);
+    return cmdArchive(
+      file,
+      deps.archiveChange ?? archiveChange,
+      deps.archiveWorkfiles ?? archiveWorkfiles
+    );
   }
   if (cmd === "units-status") {
-    const file = flag(rest, "--file");
+    const { values, unknown } = parseArgs(rest, ["--file"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = requiredFlag(values, "--file");
     if (file === void 0) {
       process.stderr.write("units-status requires --file\n");
       return 2;
@@ -407,12 +358,18 @@ function main(argv, deps = {}) {
     return cmdUnitsStatus(file);
   }
   if (cmd === "model") {
-    const stage = flag(rest, "--stage");
+    const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const stage = requiredFlag(values, "--stage");
     if (stage === void 0) {
       process.stderr.write("model requires --stage\n");
       return 2;
     }
-    return cmdModel(stage, flag(rest, "--config") ?? ".devloop/config.json");
+    return cmdModel(stage, rawFlag(values, "--config") ?? ".devloop/config.json");
   }
   process.stderr.write(`unrouted command: ${cmd}
 `);

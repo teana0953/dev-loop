@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,16 @@ function runStatusViaWrapper(cpPath: string): string {
   return execFileSync(WRAPPER, ["status", "--file", cpPath], { encoding: "utf-8" });
 }
 
-describe("cli status", () => {
+// status is not in TS_COMMANDS (see C1) — every case below now exercises
+// delegation to the real Python engine (through bin/devloop's exec), not a
+// TypeScript implementation. That is deliberate: `status` used to be TS-owned
+// with three documented omissions (--json, config.json gate_cmds sourcing,
+// the watcher-missing warning) that were harmless only because nothing
+// invoked the TS path. Making bin/devloop exec dist/cli.js turned them into
+// live regressions, and the ruling was to drop status back to Python rather
+// than rush a partial port. These tests now pin "byte-identical to Python,
+// because it *is* Python" instead of pinning TS's own (incomplete) format.
+describe("cli status (delegated to Python — C1)", () => {
   it("prints phase summary and next hint", () => {
     const dir = mkdtempSync(join(tmpdir(), "cli-"));
     const p = join(dir, "cp.json");
@@ -109,9 +118,41 @@ describe("cli status", () => {
     },
   );
 
-  it("treats an empty --file value as missing (exit 2), matching the pre-TS behavior", () => {
-    const rc = main(["status", "--file", ""]);
-    expect(rc).toBe(2);
+  it("routes status through the injected delegate rather than owning it", () => {
+    const seen: string[][] = [];
+    const rc = main(["status", "--file", "x"], {
+      delegate: (argv) => { seen.push(argv); return 0; },
+    });
+    expect(rc).toBe(0);
+    expect(seen).toEqual([["status", "--file", "x"]]);
+  });
+
+  it("honors gate_cmds from config.json and prints the watcher-missing warning", () => {
+    // This is the exact regression C1 pinned: the old TS-owned cmdStatus
+    // never read config.json (so the gate hint was always the "<test-cmd>"
+    // skeleton, never the real command) and never checked the watcher
+    // (so the "watcher not running; re-arm:" warning never printed). Both
+    // must show up now that status is Python end to end.
+    const dir = mkdtempSync(join(tmpdir(), "cli-status-"));
+    const p = join(dir, "cp.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        phase: "gate",
+        change_id: "c",
+        branch: "b",
+        iteration: 1,
+        gate_failures: 0,
+        resume_exec: "some-resume-command",
+      }),
+      "utf-8",
+    );
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ gate_cmds: ["npm test"] }), "utf-8");
+    const proc = spawnSync(WRAPPER, ["status", "--file", p], { encoding: "utf-8" });
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).toContain(`next: devloop gate --file ${p}`);
+    expect(proc.stdout).not.toContain("--cmd");
+    expect(proc.stderr).toContain("warning: watcher not running; re-arm:");
   });
 });
 
@@ -229,5 +270,88 @@ describe("archive", () => {
     });
     expect(rc).toBe(1);
     expect(existsSync(join(dir, "archive"))).toBe(false);
+  });
+
+  it("warns but still exits 0 when the workfile sweep itself fails (I6)", () => {
+    // Python 對照:tests/test_housekeeping.py
+    // test_cli_archive_housekeeping_failure_warns_but_exit_0. The sweep is
+    // cleanup — it must not reverse an openspec archive that already
+    // succeeded. Injecting archiveWorkfiles lets this be exercised without
+    // needing to contrive a real filesystem failure.
+    const dir = mkdtempSync(join(tmpdir(), "arch-"));
+    const cp = checkpointAt(dir, "add-foo");
+    writeFileSync(join(dir, "r.json"), "{}", "utf-8");
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const rc = main(["archive", "--file", cp], {
+      archiveChange: () => ({ ok: true, command: ["openspec", "archive", "add-foo"], output: "archived" }),
+      archiveWorkfiles: () => {
+        throw new Error("disk full");
+      },
+    });
+    const warned = stderrSpy.mock.calls.some(([msg]) =>
+      String(msg).includes("warning: workfile archive failed"),
+    );
+    stderrSpy.mockRestore();
+    expect(rc).toBe(0);
+    expect(warned).toBe(true);
+    // 工作檔沒被歸檔(sweep 失敗),但也沒有被誤刪——archive 成功這件事本身
+    // 不反悔。
+    expect(existsSync(join(dir, "r.json"))).toBe(true);
+  });
+});
+
+describe("unknown arguments are rejected (I3)", () => {
+  it("units-status exits 2 on a typo'd flag instead of silently ignoring it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-unk-"));
+    const p = join(dir, "cp.json");
+    writeFileSync(p, JSON.stringify({ phase: "apply", change_id: "c", branch: "b" }), "utf-8");
+    const rc = main(["units-status", "--file", p, "--bogus"]);
+    expect(rc).toBe(2);
+  });
+
+  it("model exits 2 on a typo'd flag instead of silently ignoring it", () => {
+    const rc = main(["model", "--stage", "apply", "--bogus", "x"]);
+    expect(rc).toBe(2);
+  });
+
+  it("archive exits 2 on a typo'd flag instead of silently ignoring it", () => {
+    const rc = main(["archive", "--file", "x", "--json"]);
+    expect(rc).toBe(2);
+  });
+
+  it("does not reject a command with only known flags", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-unk-"));
+    const p = join(dir, "cp.json");
+    writeFileSync(p, JSON.stringify({ phase: "apply", change_id: "c", branch: "b" }), "utf-8");
+    expect(main(["units-status", "--file", p])).toBe(0);
+  });
+});
+
+describe("model: repeated flags and the empty-string --config edge case (M8/M9)", () => {
+  it("a repeated --stage takes the LAST occurrence, matching argparse (M8)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-model-"));
+    const configPath = join(dir, "config.json");
+    // Only "fix" has an override; if --stage were resolved as the first
+    // occurrence ("apply", which has no override and no profile) this would
+    // print "inherit" instead.
+    writeFileSync(configPath, JSON.stringify({ models: { fix: "haiku" } }), "utf-8");
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const rc = main(["model", "--stage", "apply", "--stage", "fix", "--config", configPath]);
+    const printed = stdoutSpy.mock.calls.map(([msg]) => String(msg)).join("");
+    stdoutSpy.mockRestore();
+    expect(rc).toBe(0);
+    expect(printed.trim()).toBe("haiku");
+  });
+
+  it('an explicit --config "" is a literal value, not "flag absent" (M9)', () => {
+    // flag()/rawFlag() must NOT collapse an explicitly-passed empty string
+    // into "flag absent -> substitute the default path". If it did, this
+    // could silently load a real .devloop/config.json instead of the literal
+    // "" the user typed. loadConfig("") reports no file present (Node's
+    // fs.existsSync("") is false), so this must resolve to "inherit" — the
+    // same as passing a config path that plainly does not exist — never a
+    // real profile/model that happens to live at the default relative path.
+    const rc = main(["model", "--stage", "apply", "--config", ""]);
+    expect(rc).toBe(0);
   });
 });

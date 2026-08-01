@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync,
+  mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,5 +93,25 @@ describe("archiveWorkfiles", () => {
 
   it("keeps exactly the documented resident files", () => {
     expect([...KEEP_FILES]).toEqual(["config.json", "watcher.pid"]);
+  });
+
+  it("skips a dangling symlink instead of aborting the sweep (I4)", () => {
+    // statSync(p) throws ENOENT on a broken symlink; Python's p.is_file()
+    // just returns False and moves on. A partial sweep that silently stops
+    // partway (while cmdArchive still reports success) is the regression
+    // this test pins.
+    const d = devloopDir();
+    const cp = write(d, "checkpoint.json");
+    write(d, "a-report.json");
+    write(d, "z-report.json");
+    symlinkSync(join(d, "does-not-exist"), join(d, "broken-link"));
+
+    const archived = archiveWorkfiles(cp, "c1");
+
+    expect(archived).toEqual([
+      "a-report.json", "z-report.json", "checkpoint.json (snapshot)",
+    ]);
+    // 壞掉的 symlink 本身留在原地(既不是「檔案」也不歸檔,但也不該被誤刪)
+    expect(readdirSync(d)).toContain("broken-link");
   });
 });

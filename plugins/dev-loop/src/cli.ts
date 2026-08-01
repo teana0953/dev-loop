@@ -5,12 +5,12 @@ import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCheckpoint } from "./checkpoint.js";
-import { nextHint } from "./statemachine.js";
 import { archiveChange } from "./openspec.js";
 import type { OpenSpecResult } from "./openspec.js";
-import { archiveWorkfiles } from "./housekeeping.js";
+import { archiveWorkfiles as archiveWorkfilesReal } from "./housekeeping.js";
 import { pendingUnits, type Unit } from "./units.js";
 import { loadConfig, resolveModel } from "./config.js";
+import { pyIndex } from "./jsonio.js";
 
 /**
  * 本引擎自己處理的子命令。其餘一律委派回 Python。
@@ -18,14 +18,26 @@ import { loadConfig, resolveModel } from "./config.js";
  * 這份清單與 main() 的分派必須完全一致——清單多列一個沒實作的命令,呼叫會
  * 落到 unknown 分支;少列一個已實作的,呼叫會靜默走 Python,「已移植」變成
  * 假的而且沒有人會發現。cli.test.ts 有一條測試釘住兩者相符。
+ *
+ * "status" is deliberately NOT here even though a `cmdStatus` used to exist:
+ * it was written before this branch made TS the front door and shipped with
+ * three documented omissions (--json, config.json gate_cmds sourcing, the
+ * watcher-missing warning) that were harmless while nothing invoked it.
+ * Once bin/devloop started execing dist/cli.js, those omissions became live,
+ * silent regressions. Status stays on Python until the `watcher` module is
+ * ported (next milestone) and a full port can be done properly.
  */
-export const TS_COMMANDS = ["status", "archive", "units-status", "model"] as const;
+export const TS_COMMANDS = ["archive", "units-status", "model"] as const;
 
 export interface CliDeps {
   delegate: (argv: string[]) => number;
   // archive 會真的呼叫 openspec CLI,測試要能換掉它。Python 那側是
   // monkeypatch cli.archive_change,這裡用注入達到同一件事。
   archiveChange: (changeId: string) => OpenSpecResult;
+  // archiveWorkfiles 會真的動檔案系統(sweep 工作檔),測試要能換掉它,
+  // 才能演練「archive 成功、sweep 失敗」這條 warn-but-exit-0 的路徑而不必
+  // 真的在磁碟上造出一個會讓 statSync/renameSync 失敗的情境。
+  archiveWorkfiles: (checkpointPath: string, changeId: string) => string[];
 }
 
 /**
@@ -57,38 +69,16 @@ function delegateToPython(argv: string[]): number {
 }
 
 /**
- * status subcommand. Mirrors Python's `_cmd_status` output format exactly,
- * minus the deferred pieces:
- *  - no --json flag
- *  - no config.json / gate_cmds sourcing (nextHint called without gateCmds)
- *  - no watcher-missing warning
- */
-function cmdStatus(file: string): number {
-  const cp = loadCheckpoint(file);
-  const hint = nextHint(cp.phase, file, {
-    units: cp.units as Array<{ id: string; status?: string }>,
-    reviewLegs: cp.review_legs as Array<{ kind: string; status?: string }>,
-    finishMode: cp.finish_mode,
-    flowProfile: cp.flow_profile,
-    needsUiux: cp.needs_uiux,
-  });
-  process.stdout.write(
-    `phase=${cp.phase} iteration=${cp.iteration} change_id=${cp.change_id} branch=${cp.branch}\n`,
-  );
-  process.stdout.write(`${hint}\n`);
-  if (cp.updated_at) {
-    process.stdout.write(`updated_at=${cp.updated_at}\n`);
-  }
-  return 0;
-}
-
-/**
  * merge 階段歸檔:openspec archive 成功後才收工作檔。
  *
  * 失敗語意是刻意的:openspec archive 失敗回 1;工作檔歸檔失敗只印 warning、
  * 回 0——後者是清理,不該反噬前者已經完成的歸檔結果。
  */
-function cmdArchive(file: string, archive: (changeId: string) => OpenSpecResult): number {
+function cmdArchive(
+  file: string,
+  archive: (changeId: string) => OpenSpecResult,
+  sweep: (checkpointPath: string, changeId: string) => string[],
+): number {
   const cp = loadCheckpoint(file);
   const result = archive(cp.change_id);
   process.stdout.write(`${result.output}\n`);
@@ -96,7 +86,7 @@ function cmdArchive(file: string, archive: (changeId: string) => OpenSpecResult)
     return 1;
   }
   try {
-    const archived = archiveWorkfiles(file, cp.change_id);
+    const archived = sweep(file, cp.change_id);
     process.stdout.write(
       `archived workfiles: ${archived.length} -> ${join(dirname(file), "archive", cp.change_id)}\n`,
     );
@@ -106,13 +96,20 @@ function cmdArchive(file: string, archive: (changeId: string) => OpenSpecResult)
   return 0;
 }
 
+/**
+ * units-status subcommand. Python: `print("%s %s" % (u["id"], u["status"]))`
+ * — a unit missing either key raises KeyError and the command dies. Plain
+ * property access (`u.id`/`u.status`) would instead print `undefined` and
+ * exit 0, the exact obj.k hazard pyIndex exists to close.
+ */
 function cmdUnitsStatus(file: string): number {
   const cp = loadCheckpoint(file);
   const units = cp.units as unknown as Unit[];
-  for (const u of units) {
-    process.stdout.write(`${u.id} ${u.status}\n`);
+  for (const raw of units) {
+    const u = raw as unknown as Record<string, unknown>;
+    process.stdout.write(`${pyIndex<string>(u, "id")} ${pyIndex<string>(u, "status")}\n`);
   }
-  const pend = pendingUnits(units).map((u) => u.id);
+  const pend = pendingUnits(units).map((raw) => pyIndex<string>(raw as unknown as Record<string, unknown>, "id"));
   process.stdout.write(`pending: ${pend.length > 0 ? pend.join(",") : "-"}\n`);
   return 0;
 }
@@ -134,20 +131,53 @@ function cmdModel(stage: string, configPath: string): number {
 }
 
 /**
- * `--key value` 形式的旗標。未知形狀留給各命令自行判斷。
+ * `--key value` 形式的旗標解析。回傳每個已知旗標的**最後一次**出現(argparse
+ * 的 store 動作就是後蓋前:`model --stage apply --stage fix` 兩邊都要落地
+ * `fix`),以及沒被任何已知旗標(或其值)吃掉的殘餘 token。
  *
- * 空字串視同缺席:舊的 `status` 解析是 `i === -1 || !rest[i + 1]`,`--file ""`
- * 會被當成缺 `--file` 回 2。這裡若只判斷 `undefined`,`--file ""` 會通過解析、
- * 一路走到 `loadCheckpoint("")` 才炸,退出碼/錯誤訊息就跟以前不一樣了——
- * 在這裡擋掉,Task 5 加的每個命令都自動繼承這條規則,不用各自重新推導。
+ * 殘餘 token 非空,代表命令列上有一個已知旗標集合認不出的東西——多半是打錯
+ * 字的旗標。argparse 對這種情況一律 exit 2 印 "unrecognized arguments";呼
+ * 叫端(main())比照辦理,而不是靜默把它當沒發生過。
  */
-function flag(rest: string[], name: string): string | undefined {
-  const i = rest.indexOf(name);
-  if (i === -1) {
-    return undefined;
+function parseArgs(
+  rest: string[],
+  known: readonly string[],
+): { values: Map<string, string>; unknown: string[] } {
+  const values = new Map<string, string>();
+  const consumed = new Array<boolean>(rest.length).fill(false);
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    if (known.includes(tok)) {
+      consumed[i] = true;
+      if (i + 1 < rest.length) {
+        values.set(tok, rest[i + 1] as string);
+        consumed[i + 1] = true;
+        i++;
+      }
+    }
   }
-  const value = rest[i + 1];
+  const unknown = rest.filter((_, i) => !consumed[i]);
+  return { values, unknown };
+}
+
+/**
+ * 必填旗標(無預設值)的讀取規則:空字串視同缺席。舊的 `status` 解析是
+ * `i === -1 || !rest[i + 1]`,`--file ""` 會被當成缺 `--file` 回 2——這裡延續
+ * 同一條規則,只用在「缺席時要直接 exit 2」的旗標(`--file`、`--stage`)。
+ *
+ * 不適用於有非空預設值的旗標(例如 `model --config`):那種旗標的空字串是
+ * 使用者明確傳入的字面值,必須原樣送進 loadConfig("")(Python argparse 也是
+ * 存字面值,不會因為它是空字串就退回 default),不能被這條規則吃掉、
+ * 誤觸發 `?? default`。那類旗標改用 `rawFlag`(見下)。
+ */
+function requiredFlag(values: Map<string, string>, name: string): string | undefined {
+  const value = values.get(name);
   return value === undefined || value === "" ? undefined : value;
+}
+
+/** 有預設值旗標的讀取規則:只有「完全沒傳這個旗標」才算缺席,空字串是合法字面值。 */
+function rawFlag(values: Map<string, string>, name: string): string | undefined {
+  return values.get(name);
 }
 
 export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
@@ -158,24 +188,30 @@ export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
     // 那正是現行行為,不需要在這裡另外複製一份。
     return delegate(argv);
   }
-  if (cmd === "status") {
-    const file = flag(rest, "--file");
-    if (file === undefined) {
-      process.stderr.write("status requires --file\n");
+  if (cmd === "archive") {
+    const { values, unknown } = parseArgs(rest, ["--file"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
       return 2;
     }
-    return cmdStatus(file);
-  }
-  if (cmd === "archive") {
-    const file = flag(rest, "--file");
+    const file = requiredFlag(values, "--file");
     if (file === undefined) {
       process.stderr.write("archive requires --file\n");
       return 2;
     }
-    return cmdArchive(file, deps.archiveChange ?? archiveChange);
+    return cmdArchive(
+      file,
+      deps.archiveChange ?? archiveChange,
+      deps.archiveWorkfiles ?? archiveWorkfilesReal,
+    );
   }
   if (cmd === "units-status") {
-    const file = flag(rest, "--file");
+    const { values, unknown } = parseArgs(rest, ["--file"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = requiredFlag(values, "--file");
     if (file === undefined) {
       process.stderr.write("units-status requires --file\n");
       return 2;
@@ -183,13 +219,19 @@ export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
     return cmdUnitsStatus(file);
   }
   if (cmd === "model") {
-    const stage = flag(rest, "--stage");
+    const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const stage = requiredFlag(values, "--stage");
     if (stage === undefined) {
       process.stderr.write("model requires --stage\n");
       return 2;
     }
-    // Python 的 --config 預設值
-    return cmdModel(stage, flag(rest, "--config") ?? ".devloop/config.json");
+    // Python 的 --config 預設值——rawFlag,不是 requiredFlag:`--config ""`
+    // 必須留著空字串本身,不能被「空字串視同缺席」規則吃掉變回這個預設值。
+    return cmdModel(stage, rawFlag(values, "--config") ?? ".devloop/config.json");
   }
   // TS_COMMANDS 列了但這裡沒分派 —— cli.test.ts 的一致性測試會先擋下
   process.stderr.write(`unrouted command: ${cmd}\n`);

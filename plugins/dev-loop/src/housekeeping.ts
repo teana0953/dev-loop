@@ -31,7 +31,17 @@ export function archiveWorkfiles(checkpointPath: string, changeId: string): stri
   const names = readdirSync(root).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   for (const name of names) {
     const p = join(root, name);
-    if (!statSync(p).isFile() || keep.has(name)) {
+    // statSync(p) throws ENOENT on a dangling symlink; Python's p.is_file()
+    // returns False in the same situation and just skips it — a broken
+    // symlink left in the work directory must not abort the whole sweep.
+    // { throwIfNoEntry: false } gives us that same "doesn't exist" reading
+    // instead of an exception. Do NOT switch to
+    // readdirSync(root, { withFileTypes: true }) + Dirent.isFile() instead:
+    // Dirent.isFile() has lstat semantics, so it would report false (and
+    // skip) for a symlink that points at a real file — diverging from
+    // Python's is_file() (which follows the link) in the other direction.
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st === undefined || !st.isFile() || keep.has(name)) {
       continue;
     }
     mkdirSync(dest, { recursive: true });
