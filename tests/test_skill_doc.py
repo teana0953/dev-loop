@@ -33,10 +33,28 @@ def test_skill_documents_ocr_rule_lookup_for_review():
 
 
 def test_skill_ocr_section_documents_degradation():
-    """沿用既有規矩:每個可選工具段落都要能自證降級,不能只在別處交代。"""
+    """沿用既有規矩:每個可選工具段落都要能自證降級,不能只在別處交代。三個
+    具體觸發條件(不在 PATH、非 0 退出、逾時)都要點名,連逾時秒數都要釘住——
+    悄悄改掉其中一個觸發條件或秒數,不該還能通過這條測試。"""
     seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
     assert "降級" in seg
     assert "恆不可裁" in seg
+    assert "不在 PATH" in seg
+    assert "非 0 退出" in seg
+    assert "逾時(30 秒)" in seg
+
+
+def test_skill_review_scope_is_not_narrowed():
+    """這整個改動存在的理由:diff 範圍必須看完每個真的改了的檔案,而且文字
+    不能宣稱或暗示這個範圍被縮小了。這是先前 code-review-graph 的兩條測試
+    (test_skill_review_scope_a_is_honest_about_no_reduction、
+    test_skill_review_scope_bounded_not_more_than_fallback)在守的不變量,換了
+    工具之後這條不變量還在,必須繼續有測試釘住——否則未來有人悄悄加回
+    `-- <改動檔...>` 這類過濾,或把「不縮小」那句話改弱,整條測試套件不會有
+    任何一條抓到。"""
+    seg = _slice(_text(), REVIEW_SEG_START, REVIEW_SEG_END)
+    assert "審查必須看完每個真的改了的檔案" in seg
+    assert "這個範圍不縮小,也不假裝縮小" in seg
 
 
 def test_skill_excludes_json_from_ocr_rule_lookup():
