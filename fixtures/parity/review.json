@@ -41,6 +41,19 @@
         { "severity": "non_blocking", "level": "proposal" }
       ],
       "expect": { "value": "review_blocking_code" }
+    },
+    {
+      "name": "classify does not recognize design as an escape hatch",
+      "findings": [{ "severity": "blocking", "level": "design" }],
+      "expect": { "value": "review_blocking_code" }
+    },
+    {
+      "name": "a blocking design finding alongside a blocking code finding still routes to fix",
+      "findings": [
+        { "severity": "blocking", "level": "code" },
+        { "severity": "blocking", "level": "design" }
+      ],
+      "expect": { "value": "review_blocking_code" }
     }
   ],
 
@@ -72,6 +85,19 @@
     {
       "name": "a blocking finding with no level goes back to propose",
       "findings": [{ "severity": "blocking" }],
+      "expect": { "value": "propose_blocking_proposal" }
+    },
+    {
+      "name": "classifyProposal does not recognize code as its own bucket",
+      "findings": [{ "severity": "blocking", "level": "code" }],
+      "expect": { "value": "propose_blocking_proposal" }
+    },
+    {
+      "name": "a blocking code finding alongside a blocking proposal finding still goes back to propose",
+      "findings": [
+        { "severity": "blocking", "level": "code" },
+        { "severity": "blocking", "level": "proposal" }
+      ],
       "expect": { "value": "propose_blocking_proposal" }
     }
   ],
