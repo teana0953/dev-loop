@@ -1,0 +1,31 @@
+{
+  "classifyBranchDeleteError": [
+    { "name": "exit zero is a deletion regardless of stderr",
+      "code": 0, "stderr": "warning: something",
+      "expect": { "value": "deleted" } },
+    { "name": "checked out in the current worktree",
+      "code": 1, "stderr": "error: Cannot delete branch 'b' checked out at '/repo'\n",
+      "expect": { "value": "checked_out" } },
+    { "name": "used by another worktree",
+      "code": 1, "stderr": "error: cannot delete branch 'b' used by worktree at '/repo/.wt/a'\n",
+      "expect": { "value": "checked_out" } },
+    { "name": "branch not found",
+      "code": 1, "stderr": "error: branch 'b' not found.\n",
+      "expect": { "value": "absent" } },
+    { "name": "not fully merged",
+      "code": 1, "stderr": "error: The branch 'b' is not fully merged.\n",
+      "expect": { "value": "unmerged" } },
+    { "name": "an unrecognised message is conservatively unmerged",
+      "code": 1, "stderr": "error: something nobody has seen before\n",
+      "expect": { "value": "unmerged" } },
+    { "name": "empty stderr with a non-zero code is conservatively unmerged",
+      "code": 1, "stderr": "",
+      "expect": { "value": "unmerged" } },
+    { "name": "matching is case-insensitive",
+      "code": 1, "stderr": "error: Branch 'b' NOT FOUND.\n",
+      "expect": { "value": "absent" } },
+    { "name": "checked out is matched before not found when both appear",
+      "code": 1, "stderr": "error: checked out at '/x'; ref not found\n",
+      "expect": { "value": "checked_out" } }
+  ]
+}

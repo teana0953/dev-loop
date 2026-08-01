@@ -52,6 +52,16 @@ def test_disarm_watcher_dead_pid_removes_file(tmp_path):
     assert not (tmp_path / "watcher.pid").exists()
 
 
+def test_disarm_watcher_malformed_pid_removes_file(tmp_path):
+    # 對稱 TS 側的「12abc」測試:int("12abc") 拋 ValueError -> pid=None -> absent,
+    # 但檔案仍要被刪掉(TS 用 Number.parseInt 會誤解出 12,兩邊在此語意分岔)。
+    cp = tmp_path / "cp.json"
+    cp.write_text("{}")
+    (tmp_path / "watcher.pid").write_text("12abc")
+    assert disarm_watcher(cp) == "absent"
+    assert not (tmp_path / "watcher.pid").exists()
+
+
 def test_prune_orphan_worktrees_removes_under_root(repo, tmp_path):
     wt_root = repo / ".devloop" / "wt"
     add_worktree(repo, wt_root / "g1", "loop-g1", "main")
@@ -72,6 +82,13 @@ def test_sweep_change_meta_moves_then_idempotent(tmp_path):
     assert (tmp_path / "archive" / "c1" / "c1.json").exists()
     assert not meta.exists()
     assert sweep_change_meta(cp, "c1") is False
+
+
+def test_sweep_change_meta_returns_false_when_no_meta(tmp_path):
+    # 對稱 TS 側「returns false when there is no meta」:從未存在過,而不是
+    # 搬完之後再次呼叫的 idempotent 場景。
+    cp = tmp_path / "checkpoint.json"; cp.write_text("{}")
+    assert sweep_change_meta(cp, "nope") is False
 
 
 def test_delete_merged_branch_deleted_for_merged(repo):
