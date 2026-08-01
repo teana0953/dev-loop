@@ -364,11 +364,14 @@ def test_archive_failure_returns_1(tmp_path, monkeypatch):
 
     f = tmp_path / "cp.json"
     Checkpoint(phase="merge", change_id="x", branch="b").save(f)
+    (tmp_path / "r.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         cli, "archive_change",
         lambda change_id, runner=None: OpenSpecResult(ok=False, command=["openspec", "archive", change_id], output="nope"),
     )
     assert cli.main(["archive", "--file", str(f)]) == 1
+    # 失敗語意是刻意的:openspec 沒歸檔成功就不該動工作檔
+    assert not (tmp_path / "archive").exists()
 
 
 def test_arm_local_spawns_when_no_pidfile(tmp_path, monkeypatch):

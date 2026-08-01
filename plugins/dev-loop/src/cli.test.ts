@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TS_COMMANDS, main } from "./cli.js";
@@ -188,5 +188,46 @@ describe("delegation to the Python engine", () => {
       status = (e as { status?: number }).status;
     }
     expect(status).toBe(2);
+  });
+});
+
+describe("archive", () => {
+  function checkpointAt(dir: string, changeId: string): string {
+    const p = join(dir, "checkpoint.json");
+    writeFileSync(
+      p,
+      JSON.stringify({ phase: "merge", change_id: changeId, branch: "b" }),
+      "utf-8",
+    );
+    return p;
+  }
+
+  it("archives the change, then sweeps the workfiles", () => {
+    const dir = mkdtempSync(join(tmpdir(), "arch-"));
+    const cp = checkpointAt(dir, "add-foo");
+    writeFileSync(join(dir, "r.json"), "{}", "utf-8");
+    const seen: string[] = [];
+    const rc = main(["archive", "--file", cp], {
+      archiveChange: (id) => {
+        seen.push(id);
+        return { ok: true, command: ["openspec", "archive", id], output: "archived" };
+      },
+    });
+    expect(rc).toBe(0);
+    expect(seen).toEqual(["add-foo"]);
+    expect(readdirSync(join(dir, "archive", "add-foo")).sort())
+      .toEqual(["checkpoint.json", "r.json"]);
+  });
+
+  it("returns 1 and sweeps nothing when the openspec archive fails", () => {
+    // 失敗語意是刻意的:openspec 沒歸檔成功就不該動工作檔
+    const dir = mkdtempSync(join(tmpdir(), "arch-"));
+    const cp = checkpointAt(dir, "x");
+    writeFileSync(join(dir, "r.json"), "{}", "utf-8");
+    const rc = main(["archive", "--file", cp], {
+      archiveChange: (id) => ({ ok: false, command: ["openspec", "archive", id], output: "nope" }),
+    });
+    expect(rc).toBe(1);
+    expect(existsSync(join(dir, "archive"))).toBe(false);
   });
 });

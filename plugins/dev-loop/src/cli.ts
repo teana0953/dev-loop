@@ -2,10 +2,15 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCheckpoint } from "./checkpoint.js";
 import { nextHint } from "./statemachine.js";
+import { archiveChange } from "./openspec.js";
+import type { OpenSpecResult } from "./openspec.js";
+import { archiveWorkfiles } from "./housekeeping.js";
+import { pendingUnits, type Unit } from "./units.js";
+import { loadConfig, resolveModel } from "./config.js";
 
 /**
  * 本引擎自己處理的子命令。其餘一律委派回 Python。
@@ -14,10 +19,13 @@ import { nextHint } from "./statemachine.js";
  * 落到 unknown 分支;少列一個已實作的,呼叫會靜默走 Python,「已移植」變成
  * 假的而且沒有人會發現。cli.test.ts 有一條測試釘住兩者相符。
  */
-export const TS_COMMANDS = ["status"] as const;
+export const TS_COMMANDS = ["status", "archive", "units-status", "model"] as const;
 
 export interface CliDeps {
   delegate: (argv: string[]) => number;
+  // archive 會真的呼叫 openspec CLI,測試要能換掉它。Python 那側是
+  // monkeypatch cli.archive_change,這裡用注入達到同一件事。
+  archiveChange: (changeId: string) => OpenSpecResult;
 }
 
 /**
@@ -75,6 +83,57 @@ function cmdStatus(file: string): number {
 }
 
 /**
+ * merge 階段歸檔:openspec archive 成功後才收工作檔。
+ *
+ * 失敗語意是刻意的:openspec archive 失敗回 1;工作檔歸檔失敗只印 warning、
+ * 回 0——後者是清理,不該反噬前者已經完成的歸檔結果。
+ */
+function cmdArchive(file: string, archive: (changeId: string) => OpenSpecResult): number {
+  const cp = loadCheckpoint(file);
+  const result = archive(cp.change_id);
+  process.stdout.write(`${result.output}\n`);
+  if (!result.ok) {
+    return 1;
+  }
+  try {
+    const archived = archiveWorkfiles(file, cp.change_id);
+    process.stdout.write(
+      `archived workfiles: ${archived.length} -> ${join(dirname(file), "archive", cp.change_id)}\n`,
+    );
+  } catch (exc) {
+    process.stderr.write(`warning: workfile archive failed: ${String(exc)}\n`);
+  }
+  return 0;
+}
+
+function cmdUnitsStatus(file: string): number {
+  const cp = loadCheckpoint(file);
+  const units = cp.units as unknown as Unit[];
+  for (const u of units) {
+    process.stdout.write(`${u.id} ${u.status}\n`);
+  }
+  const pend = pendingUnits(units).map((u) => u.id);
+  process.stdout.write(`pending: ${pend.length > 0 ? pend.join(",") : "-"}\n`);
+  return 0;
+}
+
+/**
+ * 階段 model 決議(dispatch subagent 前查詢):印 alias 或 inherit。
+ * 決策真理來源在引擎(resolveModel),SKILL 只照做;config 非法 exit 2。
+ */
+function cmdModel(stage: string, configPath: string): number {
+  let alias: string | null;
+  try {
+    alias = resolveModel(stage, loadConfig(configPath));
+  } catch (exc) {
+    process.stderr.write(`error: ${exc instanceof Error ? exc.message : String(exc)}\n`);
+    return 2;
+  }
+  process.stdout.write(`${alias ?? "inherit"}\n`);
+  return 0;
+}
+
+/**
  * `--key value` 形式的旗標。未知形狀留給各命令自行判斷。
  *
  * 空字串視同缺席:舊的 `status` 解析是 `i === -1 || !rest[i + 1]`,`--file ""`
@@ -106,6 +165,31 @@ export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
       return 2;
     }
     return cmdStatus(file);
+  }
+  if (cmd === "archive") {
+    const file = flag(rest, "--file");
+    if (file === undefined) {
+      process.stderr.write("archive requires --file\n");
+      return 2;
+    }
+    return cmdArchive(file, deps.archiveChange ?? archiveChange);
+  }
+  if (cmd === "units-status") {
+    const file = flag(rest, "--file");
+    if (file === undefined) {
+      process.stderr.write("units-status requires --file\n");
+      return 2;
+    }
+    return cmdUnitsStatus(file);
+  }
+  if (cmd === "model") {
+    const stage = flag(rest, "--stage");
+    if (stage === undefined) {
+      process.stderr.write("model requires --stage\n");
+      return 2;
+    }
+    // Python 的 --config 預設值
+    return cmdModel(stage, flag(rest, "--config") ?? ".devloop/config.json");
   }
   // TS_COMMANDS 列了但這裡沒分派 —— cli.test.ts 的一致性測試會先擋下
   process.stderr.write(`unrouted command: ${cmd}\n`);
