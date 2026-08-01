@@ -2,7 +2,7 @@
 import devloop.cli as cli
 from devloop.checkpoint import Checkpoint
 from devloop.cli import main
-from devloop.housekeeping import archive_workfiles
+from devloop.housekeeping import KEEP_FILES, archive_workfiles
 from devloop.openspec import OpenSpecResult
 
 
@@ -81,6 +81,39 @@ def test_archive_workfiles_empty_dir_returns_snapshot_only(tmp_path):
     cp = root / "checkpoint.json"
     Checkpoint(phase="merge", change_id="c", branch="b").save(cp)
     assert archive_workfiles(cp, "c") == ["checkpoint.json (snapshot)"]
+
+
+def test_archive_workfiles_returns_names_in_sorted_order(tmp_path):
+    # TS 對照:回傳名單的順序是可觀察輸出,SKILL 會印出來給人看
+    root = tmp_path / ".devloop"
+    root.mkdir()
+    cp = root / "checkpoint.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp)
+    for name in ("m.json", "b.json", "z.json", "a.json"):
+        (root / name).write_text("{}", encoding="utf-8")
+    archived = archive_workfiles(cp, "c")
+    assert archived[:4] == ["a.json", "b.json", "m.json", "z.json"]
+
+
+def test_archive_workfiles_preserves_checkpoint_snapshot_mtime(tmp_path):
+    # TS 對照:copy2 的語意——歸檔是鑑識用的產物,時間戳不能歸零
+    import os
+    import time
+
+    root = tmp_path / ".devloop"
+    root.mkdir()
+    cp = root / "checkpoint.json"
+    Checkpoint(phase="merge", change_id="c", branch="b").save(cp)
+    when = time.mktime((2001, 9, 9, 1, 46, 40, 0, 0, -1))
+    os.utime(cp, (when, when))
+    archive_workfiles(cp, "c")
+    snapshot = root / "archive" / "c" / "checkpoint.json"
+    assert snapshot.stat().st_mtime == cp.stat().st_mtime == when
+
+
+def test_keep_files_are_exactly_config_and_watcher_pid():
+    # TS 對照:KEEP_FILES 的內容是這個模組的公開契約
+    assert KEEP_FILES == ("config.json", "watcher.pid")
 
 
 # --- cli archive 整合 ---
