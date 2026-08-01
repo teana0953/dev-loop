@@ -76,6 +76,14 @@ def parse_review_report(path):
                 "report %s findings[%d] invalid severity %r (expected blocking|non_blocking)"
                 % (path, i, severity)
             )
+        # note 走到 render_followup 就是要被字串串接的。不驗型別的話,
+        # 一個 {"note": 42} 會安靜地活到 merge 階段才炸(而 TS 那側甚至
+        # 不炸,直接印出來)——報告解析當下就拒收,錯誤位置才有意義。
+        if "note" in finding and not isinstance(finding["note"], str):
+            raise ReportError(
+                "report %s findings[%d] note must be a string, got %r"
+                % (path, i, finding["note"])
+            )
     return findings
 
 

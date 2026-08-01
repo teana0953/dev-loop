@@ -30,3 +30,28 @@ export function readJsonObject(path: string, label: string): Record<string, unkn
 export function pyGet<T>(data: Record<string, unknown>, key: string, default_: T): T {
   return Object.prototype.hasOwnProperty.call(data, key) ? (data[key] as T) : default_;
 }
+
+/**
+ * Python `bool(value)` parity for values that came out of JSON.
+ *
+ * `Boolean(...)` is NOT a port of `bool(...)`: JavaScript calls every object
+ * truthy, Python calls empty containers falsy. So `Boolean([])` is `true`
+ * while `bool([])` is `False` — same config file, opposite runtime behavior,
+ * neither side erroring. That is the same class of defect as `??` standing in
+ * for `dict.get`, and it is why this helper exists.
+ *
+ * JSON yields exactly six falsy shapes under Python's rules: `null`, `false`,
+ * `0` (and `-0`/`0.0`), `""`, `[]`, and `{}`. Everything else — including
+ * `"0"`, `"false"`, and `[0]` — is truthy in both languages.
+ */
+export function pyTruthy(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false;
+  // `value !== 0` also covers -0 (falsy in both languages) and NaN, which
+  // JSON cannot produce but which Python considers truthy — so leaving it
+  // truthy here matches Python rather than JavaScript.
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return Boolean(value);
+}

@@ -29,6 +29,31 @@
       "name": "non-ascii note survives",
       "notes": ["中文 note"],
       "expect": { "value": "## Follow-up(non-blocking)\n\n- 中文 note\n" }
+    },
+    {
+      "name": "a non-string note is rejected",
+      "notes": [1],
+      "expect_throws": true
+    },
+    {
+      "name": "a non-string note among valid ones is rejected",
+      "notes": ["a", 2],
+      "expect_throws": true
+    },
+    {
+      "name": "null instead of a list is rejected",
+      "notes": null,
+      "expect_throws": true
+    },
+    {
+      "name": "a bare string instead of a list is rejected",
+      "notes": "ab",
+      "expect_throws": true
+    },
+    {
+      "name": "an object instead of a list is rejected",
+      "notes": { "0": "a" },
+      "expect_throws": true
     }
   ]
 }
