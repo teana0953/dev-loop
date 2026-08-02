@@ -675,6 +675,97 @@ describe("gate", () => {
     expect(cp.phase).toBe("fix");
   });
 
+  /**
+   * `expect(p).rejects` 在 vitest 對 ReferenceError 也算通過,所以自己把錯誤
+   * 抓出來並排除 ReferenceError。(與 parseArgs 那組的同名 helper 相同。)
+   */
+  async function expectRejects(p: Promise<unknown>, label: string): Promise<unknown> {
+    let caught: unknown;
+    try {
+      await p;
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught, `${label}: 必須拋錯`).toBeInstanceOf(Error);
+    expect(caught, `${label}: 拋的是 ReferenceError —— 測試自己壞了`)
+      .not.toBeInstanceOf(ReferenceError);
+    return caught;
+  }
+
+  /**
+   * 升級的邊界是 `cp.gate_failures > maxGate`(gate_failures 已先 +1),不是 `>=`。
+   *
+   * 把它寫成 `>=` 會讓 TS 比 Python 早一輪升級 —— 同一個 checkpoint,一邊還在
+   * 「再修一輪」、一邊已經「放棄等人接手」。這正是本里程碑最怕的雙引擎狀態分岔。
+   *
+   * 下面的 grid 是實測出來的:對兩個引擎各跑一份全新目錄,gate_failures ∈
+   * {0,1,2} × --max-gate ∈ {-1,0,1,2},每格兩邊完全相同。只有兩格能區分
+   * `>` 與 `>=`(也就是 gate_failures+1 === maxGate 的那條對角線),兩格都在
+   * 下面被釘住 —— 原本的 escalation 測試用的是 (1, 1),那格 2>1 與 2>=1 都真,
+   * 對這個變異完全無感。
+   *
+   *   gf  maxg | PY 與 TS(exit, phase, 存回的 gate_failures)
+   *    0    -1 | 3, escalated, 1
+   *    0     0 | 3, escalated, 1
+   *    0     1 | 1, fix,       1   <- 區分 > 與 >=
+   *    0     2 | 1, fix,       1
+   *    1    -1 | 3, escalated, 2
+   *    1     0 | 3, escalated, 2
+   *    1     1 | 3, escalated, 2   <- 原本唯一的 escalation 測試在這裡
+   *    1     2 | 1, fix,       2   <- 區分 > 與 >=
+   *    2   任一 | 3, escalated, 3
+   */
+  it("stays in fix on the failure that exactly SPENDS the budget (not >=)", async () => {
+    // PY(實測 gf=0 --max-gate 1):exit 1、"phase=fix iteration=0"、gate_failures=1。
+    // `>=` 會在這裡就升級成 exit 3 / escalated。
+    const file = fixture({ gate_failures: 0 });
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--cmd", "/usr/bin/false", "--max-gate", "1",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=fix iteration=0\n");
+    const cp = loadCheckpoint(file);
+    expect(cp.phase).toBe("fix");
+    expect(cp.gate_failures).toBe(1);
+  });
+
+  it("stays in fix at the other boundary point too (gate_failures 1, --max-gate 2)", async () => {
+    // 第二條區分格。兩格都留著:只留一條的話,把邊界從 > 改成 >= 之外的其他
+    // 偏移(例如整個 +1)仍可能剛好躲過。
+    // PY(實測):exit 1、"phase=fix iteration=0"、gate_failures=2。
+    const file = fixture({ gate_failures: 1 });
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--cmd", "/usr/bin/false", "--max-gate", "2",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=fix iteration=0\n");
+    expect(loadCheckpoint(file).gate_failures).toBe(2);
+  });
+
+  it("escalates on the very first failure when --max-gate is 0 or negative", async () => {
+    // argparse 的 type=int 沒有下界,0 與負數都是合法輸入(--max-gate -1 走
+    // negative-number matcher,是值不是旗標)。PY(實測)兩者都是 exit 3 /
+    // escalated / gate_failures=1。
+    for (const maxGate of ["0", "-1"]) {
+      const file = fixture({ gate_failures: 0 });
+      const out = capture("stdout");
+      const rc = await main([
+        "gate", "--file", file, "--cmd", "/usr/bin/false", "--max-gate", maxGate,
+      ]);
+      const printed = out.text();
+      out.restore();
+      expect(rc, `--max-gate ${maxGate}`).toBe(3);
+      expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=escalated iteration=0\n");
+      expect(loadCheckpoint(file).gate_failures).toBe(1);
+    }
+  });
+
   it("exits 3 — not 1 — once the failure budget is spent", async () => {
     // escalated 與一般 fail 必須可區分:3 專屬升級。混在一起的話編排端
     // 會把「已經放棄、要人接手」誤當成「再修一輪」。
@@ -729,6 +820,50 @@ describe("gate", () => {
     expect(rc).toBe(2);
     expect(msg).toBe(
       "error: no gate commands: pass --cmd or set gate_cmds in .devloop/config.json\n");
+  });
+
+  /**
+   * Python 的 `except ValueError` 只接 ValueError。JSONDecodeError 是它的子類
+   * (壞掉的 config.json -> exit 2);IsADirectoryError / PermissionError 是
+   * OSError,**不**被接住(-> 未捕捉例外,exit 1)。
+   *
+   * TS 這側用 `isOsError`(Node 的 ErrnoException 帶 `code`)把兩類分開。少了
+   * 那個 rethrow,一個讀不到的 config 會從「炸掉、要人處理」悄悄變成「exit 2、
+   * 像是使用者忘了給 --cmd」——而 Python 仍然是 exit 1。
+   *
+   * 兩邊實測(各自全新目錄):
+   *   config.json 是目錄   PY exit 1 IsADirectoryError | TS exit 1 EISDIR
+   *   config.json chmod 000 PY exit 1 PermissionError   | TS exit 1 EACCES
+   *   config.json 是壞 JSON PY exit 2 "error: Expecting value: line 1 column 1"
+   *                         TS exit 2(訊息文字不同,是既有的認可分歧)
+   */
+  it("rethrows an unreadable config instead of reporting it as a missing --cmd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-gate-eisdir-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(makeCheckpoint({ phase: "gate", change_id: "c1", branch: "b" }), file);
+    // 目錄而不是 chmod 000:root 底下 chmod 000 照樣讀得到,這條會假綠。
+    mkdirSync(join(dir, "config.json"));
+    const exc = await expectRejects(
+      main(["gate", "--file", file]), "gate with a config.json that is a directory");
+    expect((exc as NodeJS.ErrnoException).code).toBe("EISDIR");
+    // 炸掉表示什麼都沒推進
+    expect(loadCheckpoint(file).phase).toBe("gate");
+  });
+
+  it("still reports a CORRUPT config as exit 2, the way Python's ValueError branch does", async () => {
+    // rethrow 的另一半:JSON 解析錯誤沒有 `code`,必須留在 exit 2,不能被
+    // 「凡是例外都往外丟」一起帶走。
+    const dir = mkdtempSync(join(tmpdir(), "cli-gate-badjson-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(makeCheckpoint({ phase: "gate", change_id: "c1", branch: "b" }), file);
+    writeFileSync(join(dir, "config.json"), "not json", "utf-8");
+    const err = capture("stderr");
+    const rc = await main(["gate", "--file", file]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toMatch(/^error: /);
+    expect(loadCheckpoint(file).phase).toBe("gate");
   });
 
   it("splits each configured command with shlex, not on spaces", async () => {
@@ -1032,6 +1167,10 @@ describe("parseArgs: argparse compatibility", () => {
     await expectRejects(main(["event", "--file", "", "--event", "apply_done"]),
       'event --file ""');
     await expectRejects(main(["archive", "--file", ""]), 'archive --file ""');
+    // gate 也走同一條規則(它用的是 rawFlag,不是已被刪掉的 requiredFlag)。
+    // PY(實測)`gate --file "" --cmd /usr/bin/true`:IsADirectoryError: '.',exit 1。
+    await expectRejects(main(["gate", "--file", "", "--cmd", "/usr/bin/true"]),
+      'gate --file ""');
   });
 
   it('keeps model --stage "" at exit 2, the way argparse\'s choices do', async () => {

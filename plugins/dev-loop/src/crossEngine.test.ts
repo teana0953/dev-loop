@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -323,6 +323,52 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
         "--c", "/usr/bin/true", "--cmd=/usr/bin/false",
       ],
+    },
+    {
+      // 邊界格:gate_failures 0 + --max-gate 1 -> +1 後 1 > 1 為假,留在 fix。
+      // 原本的 escalation 那條用 (1, 1),`>` 與 `>=` 在那格同真,分不出來。
+      name: "the failure that exactly spends the budget stays in fix",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b", gate_failures: 0 }),
+        "--cmd", "/usr/bin/false", "--max-gate", "1",
+      ],
+    },
+    {
+      name: "the other boundary point: gate_failures 1 with --max-gate 2 stays in fix",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b", gate_failures: 1 }),
+        "--cmd", "/usr/bin/false", "--max-gate", "2",
+      ],
+    },
+    {
+      // argparse 的 type=int 沒有下界;負數走 negative-number matcher,是值不是旗標。
+      name: "a negative --max-gate escalates on the first failure",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b", gate_failures: 0 }),
+        "--cmd", "/usr/bin/false", "--max-gate", "-1",
+      ],
+    },
+    {
+      // Python 的 except ValueError 不接 OSError:兩邊都是未捕捉的例外、
+      // stdout 空、exit 1。矩陣只比 stdout 與 exit code,traceback 文字不比。
+      name: "a config.json that is a directory blows up rather than exiting 2",
+      build: (dir) => {
+        const cp = writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" });
+        mkdirSync(join(dir, "config.json"));
+        return ["gate", "--file", cp];
+      },
+    },
+    {
+      // 另一半:JSONDecodeError 是 ValueError 的子類 -> 兩邊都 exit 2。
+      name: "a corrupt config.json is exit 2, not a crash",
+      build: (dir) => {
+        const cp = writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" });
+        writeFileSync(join(dir, "config.json"), "not json", "utf-8");
+        return ["gate", "--file", cp];
+      },
     },
     {
       name: "escalation exits 3",
