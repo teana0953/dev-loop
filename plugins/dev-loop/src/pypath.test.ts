@@ -25,15 +25,18 @@ beforeAll(() => {
 
 describe("pyResolve", () => {
   it("resolves a symlinked parent even when the leaf does not exist", () => {
-    // 實測(Python 3.14, macOS):
+    // 實測(Python 3.14):
     //   >>> from pathlib import Path
-    //   >>> Path("/tmp/does-not-exist-xyz-123").resolve()
-    //   PosixPath("/private/tmp/does-not-exist-xyz-123")
-    // /tmp 是 /private/tmp 的 symlink,而且不存在的路徑不拋錯 —— 只是把存在
-    // 的前綴 realpath 掉,不存在的尾段原樣接回去。
-    const real = pyResolve("/tmp");
-    expect(real).toBe("/private/tmp");
-    expect(pyResolve("/tmp/does-not-exist-xyz-123")).toBe(`${real}/does-not-exist-xyz-123`);
+    //   >>> Path(f"{base}/reallink/does-not-exist-xyz-123").resolve()
+    //   PosixPath(f"{base}/realdir/does-not-exist-xyz-123")
+    // 存在的前綴 realpath 掉,不存在的尾段原樣接回去,不拋錯。
+    //
+    // 這條原本寫死 `/tmp` -> `/private/tmp`,那是 macOS 專屬事實。CI 的 ts job
+    // 跑 ubuntu-latest,那裡 /tmp 是真目錄,寫死的斷言必紅。改用 setup 自己
+    // 建的 symlink,兩個平台都成立。
+    expect(pyResolve(join(base, "reallink", "does-not-exist-xyz-123"))).toBe(
+      join(base, "realdir", "does-not-exist-xyz-123"),
+    );
   });
 
   it("resolves a relative path against cwd", () => {
