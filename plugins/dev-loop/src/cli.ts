@@ -233,9 +233,10 @@ function cmdEvent(
     cp.gate_failures = 0;
   }
   // Python 是 `if getattr(args, "finish_mode", None):`——truthy 檢查,不是
-  // `is not None`。argparse 的 choices 已經把值限制在 merge/pr,所以兩者
-  // 在可達輸入上等價。
-  if (finishMode !== null && finishMode !== "") {
+  // `is not None`。呼叫端的 choices 檢查已經把值限制在 merge/pr(""、以及
+  // 其他任何字串都在那裡就 exit 2 了),所以這裡只剩 null 需要擋:再多寫一個
+  // `finishMode !== ""` 是不可達的死碼。
+  if (finishMode !== null) {
     cp.finish_mode = finishMode;
   }
   saveWithHistory(cp, file, event, fromPhase);
@@ -244,51 +245,141 @@ function cmdEvent(
 }
 
 /**
- * `--key value` 形式的旗標解析。回傳每個已知旗標的**最後一次**出現(argparse
- * 的 store 動作就是後蓋前:`model --stage apply --stage fix` 兩邊都要落地
- * `fix`),以及沒被任何已知旗標(或其值)吃掉的殘餘 token。
+ * argparse 的 `_parse_optional`:哪一種 token 會被當成「另一個旗標」因而**不能**
+ * 拿來當前一個旗標的值。實測(argparse.ArgumentParser,無 negative-number 選項):
+ *   "-"        -> 值(單獨一個減號不是選項)
+ *   "-1" "-1.5"-> 值(negative number matcher)
+ *   "-x y"     -> 值(含空白者一律不是選項)
+ *   "-foo"     -> 選項 => `--event -foo` 報 "expected one argument"
+ *   "--foo"    -> 選項
+ *   "--" "---" -> 選項 => `--event --` 也報 "expected one argument"
+ */
+function looksLikeFlag(tok: string): boolean {
+  if (!tok.startsWith("-") || tok === "-") {
+    return false;
+  }
+  if (/^-\d+$/.test(tok) || /^-\d*\.\d+$/.test(tok)) {
+    return false;
+  }
+  // argparse:含空白的 token 一律當值(實測 `--event "--foo bar"` 存下 "--foo bar")
+  return !tok.includes(" ");
+}
+
+/**
+ * argparse 的長選項縮寫:唯一前綴即可,完全相符優先於前綴,多於一個相符報
+ * ambiguous。實測(--file/--event/--max/--finish-mode):
+ *   --fil  -> --file            --even -> --event      --ma -> --max
+ *   --fi   -> ambiguous option: --fi could match --file, --finish-mode
+ * 以及(--max/--max-gate):`--max` 完全相符,不會被判成 ambiguous;
+ * `--max-g` -> --max-gate;`--ma` -> ambiguous。
+ */
+function resolveFlagName(
+  name: string,
+  known: readonly string[],
+): { resolved: string } | { ambiguous: string[] } | null {
+  if (known.includes(name)) {
+    return { resolved: name };
+  }
+  const matches = known.filter((k) => k.startsWith(name));
+  if (matches.length === 1) {
+    return { resolved: matches[0] as string };
+  }
+  if (matches.length > 1) {
+    return { ambiguous: matches };
+  }
+  return null;
+}
+
+/**
+ * `--key value` / `--key=value` 形式的旗標解析。回傳每個已知旗標的**最後一次**
+ * 出現(argparse 的 store 動作就是後蓋前:`model --stage apply --stage fix`
+ * 兩邊都要落地 `fix`,`--event=a --event=b` 落地 `b`),沒被吃掉的殘餘 token,
+ * 以及一個「命令列本身壞掉」的錯誤字串。
  *
  * 殘餘 token 非空,代表命令列上有一個已知旗標集合認不出的東西——多半是打錯
  * 字的旗標。argparse 對這種情況一律 exit 2 印 "unrecognized arguments";呼
  * 叫端(main())比照辦理,而不是靜默把它當沒發生過。
+ *
+ * `error` 非 null 時呼叫端直接印它並回 2。它涵蓋兩種 argparse 會擋、而這支
+ * 解析器原本會靜默放行的情形——兩者都危險,因為所有變更型命令(event 起)
+ * 都走這裡,一邊推進 loop、一邊拒絕就是雙引擎狀態分岔:
+ *
+ *   1. 已知旗標沒有值(在行尾,或下一個 token 看起來像旗標)。實測
+ *      `event --file cp --event apply_done --max`:
+ *        PY  exit 2 "argument --max: expected one argument",什麼都沒寫
+ *        TS(修前) exit 0,checkpoint 真的被推進到 phase=gate
+ *      舊實作是 `if (i + 1 < rest.length)`——沒有下一個 token 就把旗標整個
+ *      吞掉,命令帶著預設值繼續跑。
+ *   2. 縮寫的旗標指向多於一個已知旗標(ambiguous option)。
+ *
+ * `--` 不做 argparse 的「separator」語意:這幾支解析器都沒有 positional,
+ * 實測每一種含 `--` 的命令列兩邊都是 exit 2(PY 走 "unrecognized arguments"
+ * 或 "required" 分支,TS 走殘餘 token 分支),沒有可觀察差異。所以 `--` 一律
+ * 丟進 unknown,不參與縮寫比對(否則 "--" 是所有長選項的前綴,會被誤判成
+ * ambiguous)。
  */
 function parseArgs(
   rest: string[],
   known: readonly string[],
-): { values: Map<string, string>; unknown: string[] } {
+): { values: Map<string, string>; unknown: string[]; error: string | null } {
   const values = new Map<string, string>();
-  const consumed = new Array<boolean>(rest.length).fill(false);
+  const unknown: string[] = [];
   for (let i = 0; i < rest.length; i++) {
-    const tok = rest[i];
-    if (known.includes(tok)) {
-      consumed[i] = true;
-      if (i + 1 < rest.length) {
-        values.set(tok, rest[i + 1] as string);
-        consumed[i + 1] = true;
-        i++;
-      }
+    const tok = rest[i] as string;
+    if (!tok.startsWith("--") || tok === "--") {
+      unknown.push(tok);
+      continue;
     }
+    const eq = tok.indexOf("=");
+    const name = eq === -1 ? tok : tok.slice(0, eq);
+    const match = resolveFlagName(name, known);
+    if (match === null) {
+      // argparse 也是把整個 "--bogus=1" 原樣列進 unrecognized arguments(實測)
+      unknown.push(tok);
+      continue;
+    }
+    if ("ambiguous" in match) {
+      return {
+        values,
+        unknown,
+        error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`,
+      };
+    }
+    if (eq !== -1) {
+      // `--flag=` 的值是空字串,不是「沒給值」——實測 argparse 存下 ""
+      // (`--max=` 因此走 "invalid int value: ''",不是 "expected one argument")。
+      values.set(match.resolved, tok.slice(eq + 1));
+      continue;
+    }
+    const next = rest[i + 1];
+    if (next === undefined || looksLikeFlag(next)) {
+      return {
+        values,
+        unknown,
+        error: `argument ${match.resolved}: expected one argument`,
+      };
+    }
+    values.set(match.resolved, next);
+    i += 1;
   }
-  const unknown = rest.filter((_, i) => !consumed[i]);
-  return { values, unknown };
+  return { values, unknown, error: null };
 }
 
 /**
- * 必填旗標(無預設值)的讀取規則:空字串視同缺席。舊的 `status` 解析是
- * `i === -1 || !rest[i + 1]`,`--file ""` 會被當成缺 `--file` 回 2——這裡延續
- * 同一條規則,只用在「缺席時要直接 exit 2」的旗標(`--file`、`--stage`)。
+ * 旗標讀取:只有「完全沒傳這個旗標」才算缺席,空字串是使用者明確傳入的合法
+ * 字面值(argparse 也是存字面值,見 `--file=` / `--flag ""` 的實測)。
  *
- * 不適用於有非空預設值的旗標(例如 `model --config`):那種旗標的空字串是
- * 使用者明確傳入的字面值,必須原樣送進 loadConfig("")(Python argparse 也是
- * 存字面值,不會因為它是空字串就退回 default),不能被這條規則吃掉、
- * 誤觸發 `?? default`。那類旗標改用 `rawFlag`(見下)。
+ * 這裡原本還有一個 `requiredFlag`,額外把空字串視同缺席。那條規則來自更早的
+ * `status` 解析(`i === -1 || !rest[i + 1]`),而 status 已經退回 Python 由
+ * delegate 處理,規則在 TS 這側再也沒有需要它的呼叫端了。實測留著它反而是
+ * 分歧——`--file ""`:
+ *   PY  archive / units-status / event 一律 exit 1
+ *       (Path("") 解析成 "." → IsADirectoryError,未捕捉)
+ *   TS(修前) exit 2("<cmd> requires --file")
+ *   TS(修後) loadCheckpoint("") 拋 ENOENT,未捕捉 → exit 1
+ * `model --stage ""` 兩邊仍是 exit 2:PY 是 argparse 的 choices 擋下,
+ * TS 是 resolveModel 對非法 stage 拋錯、cmdModel 接住回 2(實測相同)。
  */
-function requiredFlag(values: Map<string, string>, name: string): string | undefined {
-  const value = values.get(name);
-  return value === undefined || value === "" ? undefined : value;
-}
-
-/** 有預設值旗標的讀取規則:只有「完全沒傳這個旗標」才算缺席,空字串是合法字面值。 */
 function rawFlag(values: Map<string, string>, name: string): string | undefined {
   return values.get(name);
 }
@@ -348,12 +439,16 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
     return delegate(argv);
   }
   if (cmd === "archive") {
-    const { values, unknown } = parseArgs(rest, ["--file"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
+    const file = rawFlag(values, "--file");
     if (file === undefined) {
       process.stderr.write("archive requires --file\n");
       return 2;
@@ -365,12 +460,16 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
     );
   }
   if (cmd === "units-status") {
-    const { values, unknown } = parseArgs(rest, ["--file"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
+    const file = rawFlag(values, "--file");
     if (file === undefined) {
       process.stderr.write("units-status requires --file\n");
       return 2;
@@ -378,13 +477,17 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
     return cmdUnitsStatus(file);
   }
   if (cmd === "event") {
-    const { values, unknown } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
-    const event = requiredFlag(values, "--event");
+    const file = rawFlag(values, "--file");
+    const event = rawFlag(values, "--event");
     if (file === undefined || event === undefined) {
       process.stderr.write("event requires --file and --event\n");
       return 2;
@@ -394,9 +497,9 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
       return 2;
     }
     // Python 的 --finish-mode 有 choices=("merge","pr");給別的值 argparse 回 2。
-    // 這裡用 rawFlag 而不是 requiredFlag:`--finish-mode ""` 在 argparse 是
-    // 「非法選項」exit 2(實測),不是「沒傳」;requiredFlag 的「空字串視同
-    // 缺席」規則會把它靜默吃掉變成 exit 0。
+    // 空字串走的也是「非法選項」而不是「沒傳」——實測
+    // `--finish-mode ""` PY 印 "invalid choice: '' (choose from 'merge', 'pr')"
+    // 並 exit 2。rawFlag 保留空字串本身,所以下面的 choices 檢查會擋下它。
     const finishMode = rawFlag(values, "--finish-mode") ?? null;
     if (finishMode !== null && finishMode !== "merge" && finishMode !== "pr") {
       process.stderr.write(
@@ -408,12 +511,16 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
     return cmdEvent(file, event, max, finishMode);
   }
   if (cmd === "model") {
-    const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);
+    const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
       return 2;
     }
-    const stage = requiredFlag(values, "--stage");
+    const stage = rawFlag(values, "--stage");
     if (stage === undefined) {
       process.stderr.write("model requires --stage\n");
       return 2;

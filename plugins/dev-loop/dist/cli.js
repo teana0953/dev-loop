@@ -673,7 +673,7 @@ function cmdEvent(file, event, max, finishMode) {
     cp.propose_attempts = 0;
     cp.gate_failures = 0;
   }
-  if (finishMode !== null && finishMode !== "") {
+  if (finishMode !== null) {
     cp.finish_mode = finishMode;
   }
   saveWithHistory(cp, file, event, fromPhase);
@@ -681,26 +681,67 @@ function cmdEvent(file, event, max, finishMode) {
 `);
   return 0;
 }
+function looksLikeFlag(tok) {
+  if (!tok.startsWith("-") || tok === "-") {
+    return false;
+  }
+  if (/^-\d+$/.test(tok) || /^-\d*\.\d+$/.test(tok)) {
+    return false;
+  }
+  return !tok.includes(" ");
+}
+function resolveFlagName(name, known) {
+  if (known.includes(name)) {
+    return { resolved: name };
+  }
+  const matches = known.filter((k) => k.startsWith(name));
+  if (matches.length === 1) {
+    return { resolved: matches[0] };
+  }
+  if (matches.length > 1) {
+    return { ambiguous: matches };
+  }
+  return null;
+}
 function parseArgs(rest, known) {
   const values = /* @__PURE__ */ new Map();
-  const consumed = new Array(rest.length).fill(false);
+  const unknown = [];
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
-    if (known.includes(tok)) {
-      consumed[i] = true;
-      if (i + 1 < rest.length) {
-        values.set(tok, rest[i + 1]);
-        consumed[i + 1] = true;
-        i++;
-      }
+    if (!tok.startsWith("--") || tok === "--") {
+      unknown.push(tok);
+      continue;
     }
+    const eq = tok.indexOf("=");
+    const name = eq === -1 ? tok : tok.slice(0, eq);
+    const match = resolveFlagName(name, known);
+    if (match === null) {
+      unknown.push(tok);
+      continue;
+    }
+    if ("ambiguous" in match) {
+      return {
+        values,
+        unknown,
+        error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`
+      };
+    }
+    if (eq !== -1) {
+      values.set(match.resolved, tok.slice(eq + 1));
+      continue;
+    }
+    const next = rest[i + 1];
+    if (next === void 0 || looksLikeFlag(next)) {
+      return {
+        values,
+        unknown,
+        error: `argument ${match.resolved}: expected one argument`
+      };
+    }
+    values.set(match.resolved, next);
+    i += 1;
   }
-  const unknown = rest.filter((_, i) => !consumed[i]);
-  return { values, unknown };
-}
-function requiredFlag(values, name) {
-  const value = values.get(name);
-  return value === void 0 || value === "" ? void 0 : value;
+  return { values, unknown, error: null };
 }
 function rawFlag(values, name) {
   return values.get(name);
@@ -737,13 +778,18 @@ async function dispatch(argv, deps) {
     return delegate(argv);
   }
   if (cmd === "archive") {
-    const { values, unknown } = parseArgs(rest, ["--file"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
 `);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
+    const file = rawFlag(values, "--file");
     if (file === void 0) {
       process.stderr.write("archive requires --file\n");
       return 2;
@@ -755,13 +801,18 @@ async function dispatch(argv, deps) {
     );
   }
   if (cmd === "units-status") {
-    const { values, unknown } = parseArgs(rest, ["--file"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
 `);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
+    const file = rawFlag(values, "--file");
     if (file === void 0) {
       process.stderr.write("units-status requires --file\n");
       return 2;
@@ -769,14 +820,19 @@ async function dispatch(argv, deps) {
     return cmdUnitsStatus(file);
   }
   if (cmd === "event") {
-    const { values, unknown } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
 `);
       return 2;
     }
-    const file = requiredFlag(values, "--file");
-    const event = requiredFlag(values, "--event");
+    const file = rawFlag(values, "--file");
+    const event = rawFlag(values, "--event");
     if (file === void 0 || event === void 0) {
       process.stderr.write("event requires --file and --event\n");
       return 2;
@@ -796,13 +852,18 @@ async function dispatch(argv, deps) {
     return cmdEvent(file, event, max, finishMode);
   }
   if (cmd === "model") {
-    const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);
+    const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
     if (unknown.length > 0) {
       process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
 `);
       return 2;
     }
-    const stage = requiredFlag(values, "--stage");
+    const stage = rawFlag(values, "--stage");
     if (stage === void 0) {
       process.stderr.write("model requires --stage\n");
       return 2;

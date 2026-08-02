@@ -96,6 +96,23 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
       ],
     },
+    {
+      name: "the --flag=value form",
+      build: (dir) => [
+        "units-status",
+        `--file=${writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b",
+          units: [{ id: "g1", status: "pending" }],
+        })}`,
+      ],
+    },
+    {
+      name: "--file left without a value",
+      build: (dir) => {
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" });
+        return ["units-status", "--file"];
+      },
+    },
   ],
   model: [
     {
@@ -122,6 +139,17 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         "model", "--stage", "apply", "--config",
         writeConfig(dir, { model_profile: "cheap" }),
       ],
+    },
+    {
+      name: "the --flag=value form",
+      build: (dir) => [
+        "model", "--stage=apply",
+        `--config=${writeConfig(dir, { model_profile: "budget" })}`,
+      ],
+    },
+    {
+      name: "--stage left without a value",
+      build: () => ["model", "--stage"],
     },
   ],
   // 這些 case 一律不放 `resume_exec`,矩陣測試才不會 spawn watcher。
@@ -179,6 +207,50 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         "event", "--file",
         writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
         "--event", "no_such_event",
+      ],
+    },
+    {
+      // fix round 1 / F1:argparse 接受 --flag=value,舊的 parseArgs 不接受,
+      // 於是 PY 推進 loop、TS 回 2 —— 一模一樣的命令列讓兩引擎狀態分岔。
+      name: "the --flag=value form",
+      build: (dir) => [
+        "event",
+        `--file=${writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" })}`,
+        "--event=apply_done",
+      ],
+    },
+    {
+      // fix round 1 / F2:已知旗標在行尾沒有值。舊的 parseArgs 把它整個吞掉,
+      // 命令帶著預設值繼續跑並真的寫了 checkpoint,PY 則什麼都不寫直接回 2。
+      name: "a known flag left without a value",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "apply_done", "--max",
+      ],
+    },
+    {
+      name: "an unambiguous long-option abbreviation",
+      build: (dir) => [
+        "event", "--fil",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--even", "apply_done",
+      ],
+    },
+    {
+      name: "an ambiguous long-option abbreviation",
+      build: (dir) => [
+        "event", "--fi",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "apply_done",
+      ],
+    },
+    {
+      name: "a bare -- with nothing after it",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "apply_done", "--",
       ],
     },
     {

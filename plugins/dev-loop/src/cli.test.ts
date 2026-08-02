@@ -617,3 +617,278 @@ describe("event", () => {
     expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(false);
   });
 });
+
+/**
+ * parseArgs / rawFlag 的 argparse 相容性(fix round 1)。
+ *
+ * 這一組全部針對共用的旗標解析,不是針對某一支命令——`event` 之後每一支變更型
+ * 命令都走同一份程式碼,所以「一邊推進 loop、一邊拒絕」的分歧在這裡修一次就好。
+ * 每條的預期值都取自實測(argparse 直接跑,或 `python3 -m devloop.cli`)。
+ */
+describe("parseArgs: argparse compatibility", () => {
+  function cpFile(fields: Record<string, unknown> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-args-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "apply", change_id: "c1", branch: "b", ...fields }),
+      file,
+    );
+    return file;
+  }
+
+  function spy(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const s = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => s.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => s.mockRestore(),
+    };
+  }
+
+  /**
+   * `expect(p).rejects` 在 vitest 對 ReferenceError 也算通過,所以這裡自己把
+   * 錯誤抓出來、明確排除 ReferenceError——否則打錯一個名字的測試會「通過」而
+   * 什麼都沒驗到。(watcher.test.ts 的同名 helper 是同步版。)
+   */
+  async function expectRejects(p: Promise<unknown>, label: string): Promise<unknown> {
+    let caught: unknown;
+    try {
+      await p;
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught, `${label}: 必須拋錯`).toBeInstanceOf(Error);
+    expect(caught, `${label}: 拋的是 ReferenceError —— 測試自己壞了`)
+      .not.toBeInstanceOf(ReferenceError);
+    return caught;
+  }
+
+  // ---- F1: --flag=value -------------------------------------------------
+  it("accepts --flag=value the way argparse does (F1)", async () => {
+    // PY: `event --file <cp> --event=apply_done` -> exit 0, "phase=gate iteration=0"
+    // TS(修前): exit 2 "error: unrecognized arguments: --event=apply_done"
+    const file = cpFile();
+    const out = spy("stdout");
+    const rc = await main(["event", `--file=${file}`, "--event=apply_done"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=gate iteration=0\n");
+    expect(loadCheckpoint(file).phase).toBe("gate");
+  });
+
+  it("treats --flag= as an explicit empty value, not a missing one", async () => {
+    // 實測 argparse:`--event=` 存下 ""、`--max=` 走 "invalid int value: ''"
+    // ——都不是 "expected one argument"。
+    const file = cpFile();
+    const err = spy("stderr");
+    // --event="" 是合法的空事件字串,狀態機沒有這個轉移 -> InvalidTransition
+    const rcEvent = await main(["event", "--file", file, "--event="]);
+    const msg = err.text();
+    err.restore();
+    expect(rcEvent).toBe(2);
+    expect(msg).toBe("error: no transition from 'apply' on ''\n");
+
+    const err2 = spy("stderr");
+    const rcMax = await main(["event", "--file", file, "--event", "apply_done", "--max="]);
+    const msg2 = err2.text();
+    err2.restore();
+    expect(rcMax).toBe(2);
+    expect(msg2).toBe("error: argument --max: invalid int value: ''\n");
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("lets --flag=value carry a value that itself starts with --", async () => {
+    // 實測 argparse:`--event=--foo` 存下 "--foo"(而 `--event --foo` 是錯誤)。
+    const file = cpFile();
+    const err = spy("stderr");
+    const rc = await main(["event", "--file", file, "--event=--foo"]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: no transition from 'apply' on '--foo'\n");
+  });
+
+  it("lets the last --flag=value win, matching argparse's store action", async () => {
+    // 實測 argparse:`--event=a --event=b` -> event == "b"
+    const file = cpFile({ phase: "qa" });
+    const out = spy("stdout");
+    const rc = await main(["event", "--file", file, "--event=qa_fail", "--event=qa_pass"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=review iteration=0\n");
+  });
+
+  it("accepts --flag=value for the other TS commands too", async () => {
+    const file = cpFile({ units: [{ id: "g1", status: "pending" }] });
+    const out = spy("stdout");
+    const rc = await main([`units-status`, `--file=${file}`]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("g1 pending\npending: g1\n");
+
+    const dir = mkdtempSync(join(tmpdir(), "cli-args-cfg-"));
+    const cfg = join(dir, "config.json");
+    writeFileSync(cfg, JSON.stringify({ models: { apply: "haiku" } }), "utf-8");
+    const out2 = spy("stdout");
+    const rc2 = await main(["model", "--stage=apply", `--config=${cfg}`]);
+    const printed2 = out2.text();
+    out2.restore();
+    expect(rc2).toBe(0);
+    expect(printed2).toBe("haiku\n");
+  });
+
+  // ---- F2: a known flag with no value -----------------------------------
+  it("rejects a known flag left without a value instead of swallowing it (F2)", async () => {
+    // PY: `event --file <cp> --event apply_done --max`
+    //     -> exit 2 "argument --max: expected one argument", 什麼都沒寫
+    // TS(修前): exit 0, checkpoint 被推進到 phase=gate
+    const file = cpFile();
+    const err = spy("stderr");
+    const rc = await main(["event", "--file", file, "--event", "apply_done", "--max"]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: argument --max: expected one argument\n");
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("rejects a known flag whose next token looks like another flag", async () => {
+    // 實測 argparse:`--event --foo` / `--max --file` 都是 "expected one argument";
+    // `--event --` 也是(`--` 也算「看起來像旗標」)。
+    const file = cpFile();
+    const err = spy("stderr");
+    expect(await main(["event", "--file", file, "--event", "--foo"])).toBe(2);
+    expect(await main(["event", "--file", file, "--event", "e", "--max", "--file"])).toBe(2);
+    expect(await main(["event", "--file", file, "--event", "--"])).toBe(2);
+    expect(err.text()).toBe(
+      "error: argument --event: expected one argument\n"
+      + "error: argument --max: expected one argument\n"
+      + "error: argument --event: expected one argument\n",
+    );
+    err.restore();
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("still accepts values that only look flag-ish: '-', negative numbers, spaces", async () => {
+    // 實測 argparse 把這三種都當值,不當旗標。
+    const file = cpFile();
+    const err = spy("stderr");
+    // 值有被真的收下 -> 走到狀態機才失敗,而不是 "expected one argument"
+    expect(await main(["event", "--file", file, "--event", "-"])).toBe(2);
+    expect(await main(["event", "--file", file, "--event", "-1"])).toBe(2);
+    expect(await main(["event", "--file", file, "--event", "-x y"])).toBe(2);
+    expect(err.text()).toBe(
+      "error: no transition from 'apply' on '-'\n"
+      + "error: no transition from 'apply' on '-1'\n"
+      + "error: no transition from 'apply' on '-x y'\n",
+    );
+    err.restore();
+  });
+
+  it("accepts a negative --max, which argparse also treats as a value", async () => {
+    // 實測:`--max -1` -> max == -1(negative-number matcher),不是缺值。
+    const file = cpFile({ phase: "gate" });
+    const out = spy("stdout");
+    const rc = await main(["event", "--file", file, "--event", "gate_pass", "--max", "-1"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=escalated iteration=1\n");
+  });
+
+  // ---- F3: --file "" ----------------------------------------------------
+  it('treats --file "" as a literal path, not as an absent flag (F3)', async () => {
+    // PY(實測)archive / units-status / event 都是 exit 1(Path("") -> "." ->
+    // IsADirectoryError,未捕捉)。TS(修前)是 exit 2 "<cmd> requires --file"。
+    // TS(修後)loadCheckpoint("") 拋 ENOENT,一樣不被 main 接住 -> 行程 exit 1。
+    await expectRejects(main(["units-status", "--file", ""]), 'units-status --file ""');
+    await expectRejects(main(["event", "--file", "", "--event", "apply_done"]),
+      'event --file ""');
+    await expectRejects(main(["archive", "--file", ""]), 'archive --file ""');
+  });
+
+  it('keeps model --stage "" at exit 2, the way argparse\'s choices do', async () => {
+    // PY(實測):devloop model: error: argument --stage: invalid choice: ''
+    // TS:resolveModel 對非法 stage 拋錯,cmdModel 接住回 2。訊息文字不同
+    // (既有的已認可分歧),exit code 相同。
+    const err = spy("stderr");
+    const rc = await main(["model", "--stage", ""]);
+    err.restore();
+    expect(rc).toBe(2);
+  });
+
+  it("surfaces the parse error from EVERY dispatch branch, not just event", async () => {
+    // parseArgs 的 error 檢查在四支命令裡各寫了一次;只測 event 的話,漏掉
+    // 其中一支的分支會靜默通過(實測:拿掉 archive 那一支,整個 suite 仍全綠)。
+    // PY 對這四條一律 exit 2 "argument --X: expected one argument"。
+    const err = spy("stderr");
+    expect(await main(["archive", "--file"]), "archive").toBe(2);
+    expect(await main(["units-status", "--file"]), "units-status").toBe(2);
+    expect(await main(["model", "--stage"]), "model").toBe(2);
+    expect(await main(["event", "--file"]), "event").toBe(2);
+    const msg = err.text();
+    err.restore();
+    expect(msg).toBe(
+      "error: argument --file: expected one argument\n"
+      + "error: argument --file: expected one argument\n"
+      + "error: argument --stage: expected one argument\n"
+      + "error: argument --file: expected one argument\n",
+    );
+  });
+
+  it("still reports a genuinely absent required flag as exit 2", async () => {
+    const err = spy("stderr");
+    expect(await main(["units-status"])).toBe(2);
+    expect(await main(["archive"])).toBe(2);
+    expect(await main(["model"])).toBe(2);
+    err.restore();
+  });
+
+  // ---- F4: argparse long-option abbreviation ----------------------------
+  it("accepts an unambiguous long-option abbreviation, as argparse does", async () => {
+    // 實測 argparse:--fil -> --file、--even -> --event、--ma -> --max
+    const file = cpFile();
+    const out = spy("stdout");
+    const rc = await main(["event", "--fil", file, "--even", "apply_done"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=gate iteration=0\n");
+  });
+
+  it("rejects an ambiguous abbreviation with argparse's wording", async () => {
+    // 實測:devloop event: error: ambiguous option: --fi could match --file, --finish-mode
+    const file = cpFile();
+    const err = spy("stderr");
+    const rc = await main(["event", "--fi", file, "--event", "apply_done"]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: ambiguous option: --fi could match --file, --finish-mode\n");
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("still rejects an abbreviation that matches nothing", async () => {
+    const file = cpFile();
+    const err = spy("stderr");
+    const rc = await main(["event", "--file", file, "--event", "apply_done", "--zz", "1"]);
+    err.restore();
+    expect(rc).toBe(2);
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("leaves a bare -- in the unrecognized bucket rather than treating it as ambiguous", async () => {
+    // "--" 是每一個長選項的前綴;若讓它參與縮寫比對就會變成 ambiguous。
+    // 實測 PY:`event --file cp --event e --` -> exit 2 "unrecognized arguments: --"
+    const file = cpFile();
+    const err = spy("stderr");
+    const rc = await main(["event", "--file", file, "--event", "apply_done", "--"]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: unrecognized arguments: --\n");
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+});
