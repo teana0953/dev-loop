@@ -271,8 +271,14 @@ function samePath(a: string, b: string): boolean {
 
 const invokedPath = process.argv[1];
 if (invokedPath !== undefined && samePath(invokedPath, fileURLToPath(import.meta.url))) {
-  // main 現在回 Promise:直接 process.exit(main(...)) 會拿 Promise 當 exit code
-  // (被轉成 NaN → exit 0),於是所有非 0 的退出碼靜默消失。
+  // main 現在回 Promise:直接 process.exit(main(...)) 會拿 Promise 當 exit
+  // code,不論哪種 Node 行為,真正的 exit code 都會不見。實測 Node v24.18.0
+  // (`node -e 'async function f(){return 2} process.exit(f())'`):同步丟出
+  // TypeError [ERR_INVALID_ARG_TYPE],未捕捉的例外讓行程以 exit 1 收尾——
+  // 不是「Promise 轉成 NaN」。舊版 Node 曾有把 exit code 轉數字、Promise
+  // 變 NaN 因而 exit 0 的說法,但那是未經這裡驗證的舊行為,不當作現況。
+  // 兩種情況共同點都是:正確的 exit code(這裡範例是 2)被蓋掉,所以無論
+  // 底層機制為何,守衛都必須先 await/then 出真正的數字再交給 process.exit。
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
