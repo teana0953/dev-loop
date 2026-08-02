@@ -96,20 +96,35 @@ fixtures/parity/
 
 時間戳文法差異(Python 微秒 `+00:00` vs TS 毫秒 `Z`,即既有延後項 F4)不寫進 `expect`;改在兩側測試裡斷言 `updated_at` 非空且以 `YYYY-MM-DDTHH:MM:SS` 開頭——這段是兩引擎都成立的共同保證。不假綠,也不擋 M2b。
 
-> **F4 升級(2026-08-02,M2b-2b Task 5)**:F4 原本的擱置理由是「這個欄位沒有
-> 任何程式會讀」——**這句話從今天起不成立**。`watcher-status` 會把
-> `watcher-log.jsonl` 最後一筆的 `ts` 原樣印到 stdout(`last attempt: <ts> ...`),
-> 而那筆 log 是由**哪一個引擎的 watcher** 寫的並不確定:Python 的 watcher 寫
-> `2026-08-02T09:49:24.661791+00:00`,TS 的寫 `2026-08-02T09:49:24.661Z`。也就是
-> 說同一個 checkpoint 目錄,`watcher-status` 的輸出取決於當初是誰 arm 的。
+> **F4 升級(2026-08-02,M2b-2b Task 5 fix round 2 更正)**:F4 原本的擱置
+> 理由是「這個欄位沒有任何程式會讀」——**這句話不成立**,而且不是今天才不
+> 成立的。
 >
-> `crossEngine.test.ts` 在這一點上是**靠建構方式而綠的,不是靠 parity**:沒有
-> 任何一列會先在同一個目錄跑 `watch` 再跑 `watcher-status`,兩個引擎各自讀的
-> 都是測試自己寫死的 log 行。真正的混合引擎情境不在矩陣涵蓋範圍內。
+> 使用者可見的出口是 `checkpoint.updated_at`,一直都在:`status` 從以前就
+> 印 `updated_at=%s`(devloop/cli.py 的 `_cmd_status`),而 `event` / `gate`
+> 已經在 `TS_COMMANDS` 裡,也就是說**現在寫這個欄位的可能是 TS**。實測同一
+> 條命令、兩個引擎各寫一次 checkpoint,再用 Python 的 `status` 印出來:
 >
-> 統一文法仍然不在本里程碑範圍(改動會波及 history/checkpoint/adapter 三處的
-> 既有磁碟資料);這裡只是把「無人讀取」這個前提作廢,讓下一個接手的人知道
-> F4 已經有一個使用者可見的出口。
+>     checkpoint saved by TS -> updated_at=2026-08-02T10:52:11.699Z
+>     checkpoint saved by PY -> updated_at=2026-08-02T10:52:11.808985+00:00
+>
+> 也就是說使用者看到的文法取決於「上一個推進 loop 的是哪個引擎」。影響範圍
+> 是 `checkpoint.updated_at`(以及同一組文法的 history),不是 watcher log。
+>
+> M2b-2b 的 `watcher-status` 只是**又多了一個**出口:它把
+> `watcher-log.jsonl` 最後一筆的 `ts` 原樣印進 `last attempt: <ts> ...`,而
+> 那筆 log 是哪個引擎的 watcher 寫的並不確定(PY 微秒 `+00:00`、TS 毫秒
+> `Z`)。它是新增的,不是第一個。
+>
+> **矩陣兩邊都擋不住**:`status` 不在 `TS_COMMANDS`,所以它在
+> `crossEngine.test.ts` 裡一列都沒有(矩陣只走 TS 自己宣稱擁有的命令);
+> `watcher-status` 有列,但那些列是靠建構方式而綠的——沒有任何一列會先在同
+> 一個目錄跑 `watch` 再跑 `watcher-status`,兩個引擎讀的都是測試自己寫死的
+> log 行。真正的混合引擎情境不在涵蓋範圍內。
+>
+> 統一文法仍然不在本里程碑範圍(改動會波及 checkpoint/history/adapter 三處
+> 的既有磁碟資料);這裡只是把「無人讀取」這個前提作廢,並把出口與時間點記
+> 對,免得接手的人只去翻 watcher-log.jsonl。
 
 ### `followup.json`
 

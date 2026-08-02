@@ -45,9 +45,21 @@ def _spawn_watcher(exec_command, heartbeat, log_path=None):
     要等到 watcher 死掉才返回,第二次自然看不到活著的 pid。TS 用
     `stdio: "ignore"` 從一開始就沒有這個問題,所以這裡改的是 Python。
 
-    watcher 自己不印任何東西(run_watcher 不 print,續跑命令的輸出由
-    _default_run 以 capture_output=True 收進 watcher-log.jsonl),所以接 DEVNULL
-    不會遺失任何觀測資料。
+    stdout 這一路確實不損失任何東西:run_watcher 不 print,續跑命令的輸出由
+    _default_run 以 capture_output=True 收進 watcher-log.jsonl。
+
+    **stderr 是刻意丟掉的,而且是有代價的**:繼承 stderr 的版本會把 watcher
+    自己的啟動例外送回呼叫端,現在沒有了。實測 resume_exec="/nonexistent/binary --go":
+      修前:呼叫端 stderr 收到完整 traceback,末行
+            FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent/binary'
+      修後:stderr 空,watcher-log.jsonl **根本沒被建立**(_default_run 在
+            _append_log 之前就拋),整起事件唯一的殘跡是 watcher-status 的
+            "watcher: dead (stale pid=N)" + "last attempt: (none)" ——
+            有徵狀、沒有原因
+    仍然這樣做,是因為繼承 stderr 會把 F3 那個阻塞 bug 原封不動搬回來(任何
+    捕捉 stderr 的呼叫端都會卡住),而 TS 的 `stdio: "ignore"` 本來就是這個
+    行為,兩個引擎一致。要補回可觀測性,正確的位置是讓 watcher 自己把啟動
+    例外寫進 watcher-log.jsonl,不是把串流還給呼叫端——那是另一個 task。
     """
     argv = [
         sys.executable, "-m", "devloop.cli", "watch",

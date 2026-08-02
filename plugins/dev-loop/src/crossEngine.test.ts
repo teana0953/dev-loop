@@ -620,6 +620,26 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
  */
 const spawnedPidFiles: string[] = [];
 
+/**
+ * 收掉一個 watcher 連同它的子孫。
+ *
+ * `process.kill(pid)` 只殺 watcher 本身,續跑命令是它的子行程,會被 reparent
+ * 成孤兒繼續跑——而「續跑命令活得比 watcher 久」正是這個 guard 存在的情境。
+ * 實測:一個跑 `sleep 45` 的 watcher 被單殺之後,`sleep 45` 還在。
+ * 兩個引擎 spawn 出來的 watcher 都是 group leader(TS `detached: true`、
+ * Python `start_new_session=True`),所以 `-pid` 一定打得到整個 group;
+ * 保險起見再對 pid 本身送一次(group 已經沒了的話 -pid 會 ESRCH)。
+ */
+function killProcessGroup(pid: number): void {
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {
+      // 已經走了
+    }
+  }
+}
+
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -640,16 +660,12 @@ afterAll(async () => {
       continue;
     }
     // spawn 與收屍之間有幾毫秒的空窗,所以給它一點時間再判定;仍在的話
-    // 先送 SIGTERM(不留孤兒),再登記成失敗。
+    // 收掉整個 group(不留孤兒),再登記成失敗。
     for (let i = 0; i < 40 && pidAlive(pid); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
     if (pidAlive(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // 已經自己走了
-      }
+      killProcessGroup(pid);
       leaked.push(`${pidPath} (pid=${String(pid)})`);
     }
   }
@@ -716,15 +732,10 @@ describe("arm-local is idempotent on both engines, even with a long-running resu
     if (!Number.isInteger(pid) || pid <= 0) {
       return;
     }
-    // 整個 process group 一起收:watcher 是 group leader(detached /
-    // start_new_session),底下那個 sleep 30 才不會活到測試之後。
-    for (const target of [-pid, pid]) {
-      try {
-        process.kill(target, "SIGKILL");
-      } catch {
-        // 已經走了
-      }
-    }
+    // 整個 process group 一起收:底下那個 sleep 30 才不會活到測試之後。
+    // 與 afterAll 的 leak guard 共用同一個 helper——兩邊曾經不一致,guard 那側
+    // 只殺 pid,於是它「清乾淨了」的結論對孫行程是假的。
+    killProcessGroup(pid);
   }
 
   for (const [engine, run] of [["TS", runTs], ["PY", runPy]] as const) {

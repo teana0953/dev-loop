@@ -128,7 +128,7 @@ updated_at=2026-08-01T04:48:48.845976   ← status
 - 刪除 Python(M2c)
 - 不改 `SKILL.md` 的任何呼叫方式。對編排端透明是雙軌遷移的前提
 - 不動 Python 引擎,除非 parity 又揭露 bug(已發生兩次:`??` 與 `Boolean()`)
-- history 與 checkpoint 的時間戳文法統一(既有延後項 F4,`adapter.json` 沿用相同處理)。**注意**:M2b-2b 的 `watcher-status` 已經把 watcher log 的 `ts` 印到 stdout,F4 原本「沒有程式讀這個欄位」的擱置理由因此失效——見 2026-07-31-parity-fixtures-design.md 的升級註記
+- history 與 checkpoint 的時間戳文法統一(既有延後項 F4,`adapter.json` 沿用相同處理)。**注意**:F4「沒有程式讀這個欄位」的擱置理由早已失效——`status` 一直在印 `updated_at=%s`,而寫這個欄位的 `event`/`gate` 已經是 TS 的,所以同一個 loop 的 `updated_at` 文法取決於上一次是誰推進的;M2b-2b 的 `watcher-status` 只是再多一個出口。見 2026-07-31-parity-fixtures-design.md 的升級註記
 
 ## 待實作時決定
 
