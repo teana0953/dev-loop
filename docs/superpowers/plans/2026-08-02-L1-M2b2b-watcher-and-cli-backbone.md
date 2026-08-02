@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- **絕不手動改 `plugins/dev-loop/dist/`。** 那是 commit 進版控的 bundle,由 `npm run bundle` 產生;`pretest` 已是 `build && bundle`,CI 有 stale guard。每個 task 結束前 `git diff -- plugins/dev-loop/dist` 必須是空的(除非該 task 明確要求重打包)。
+- **絕不手動改 `plugins/dev-loop/dist/`。** 那是 commit 進版控的 bundle,由 `npm run bundle` 產生;`pretest` 已是 `build && bundle`,CI 有 stale guard。
+  - **本輪 `dist/` 會變,而且必須變**:`watcher.ts` 的 `spawnWatcher` spawn 的就是 `dist/cli.js`,Task 1 起就有測試真的去執行它。所以規則是「只由 `npm run bundle` 產生,絕不手改」,**不是**「diff 必須是空的」。每個 task 結束前檢查 `git status`,`dist/` 有變就跟著該 task 一起 commit。
+  - 判別手改的方法:重跑 `npm run bundle` 後 `git diff -- plugins/dev-loop/dist` 應該是空的。不是空的就表示有人手動動過。
 - **Python 是參考實作。** 兩邊行為不同時改 TS,不改 Python——除非 review 證明 Python 本身有 bug,那要另外裁決。
 - **移植 Python 語意的三個 helper 一律使用,不准直譯**:`Boolean(x)` → `pyTruthy`、`x ?? d` → `pyGet`、`obj.k` → `pyIndex`(皆在 `src/jsonio.ts`);路徑用 `pyResolve`(`src/pypath.ts`)。
 - **每個新行為都要有能咬住它的測試。** 寫完後把實作改回錯的形狀,確認測試真的變紅;改不紅的測試等於沒寫。M2b-2a 的教訓:六個 subprocess 分歧修好之前,462 條測試全綠。
@@ -695,18 +697,8 @@ from devloop import watcher
 SECTIONS = ["watcherState", "lastWatcherAttempt"]
 
 
-def _dead_pid():
+def _reaped_pid():
     """真的產生一個已被收屍的 pid——比猜一個大數字可靠。"""
-    proc = subprocess.run(["/usr/bin/true"])
-    assert proc.returncode == 0
-    return os.getpid() if False else _reaped(proc)
-
-
-def _reaped(proc):
-    return proc.args and _last_pid()
-
-
-def _last_pid():
     p = subprocess.Popen(["/usr/bin/true"])
     p.wait()
     return p.pid
@@ -726,7 +718,7 @@ def _subst(value, self_pid, dead_pid):
 def test_watcher_state_parity(case, tmp_path):
     expect, throws = resolve_expectation(case, "py")
     assert not throws, "watcherState never raises for these inputs"
-    self_pid, dead_pid = os.getpid(), _last_pid()
+    self_pid, dead_pid = os.getpid(), _reaped_pid()
     cp = tmp_path / "cp.json"
     cp.write_text("{}")
     pid_file = case["input"]["pid_file"]
@@ -749,8 +741,6 @@ def test_last_watcher_attempt_parity(case, tmp_path):
     assert_subset(
         {"value": watcher._last_watcher_attempt(str(cp))}, expect, case["name"])
 ```
-
-實作時把上面那三個湊出 dead pid 的小函式收成一個 `_reaped_pid()`——**這裡刻意留了一個繞路的寫法給實作者收拾**:直接 `subprocess.Popen(["/usr/bin/true"]); p.wait(); return p.pid` 就夠了,不要保留 `_dead_pid`/`_reaped`。
 
 `plugins/dev-loop/src/parity.watcher.test.ts`:
 
@@ -2219,17 +2209,7 @@ spec 的「不做」清單(其餘 13 個變更型命令、`units_cli` 六個、`
 
 Task 5 Step 2 的測試碼裡有 `/* checkpoint with ... */` 形式的簡寫。這是**本計畫刻意保留的唯一一處**,因為 fixture helper 的確切形狀取決於 `cli.test.ts` 既有的寫法(該檔已有 stdout 攔截與 checkpoint 建立的慣例,重寫一份會與它打架)。Step 2 的正文已明確要求實作者把它換成與 Task 3 同款的 `fixture()` 呼叫、不得保留註解形式。其餘所有步驟都有可直接貼上的程式碼。
 
-Task 1 Step 14 的 Python 消費者裡我故意留了 `_dead_pid`/`_reaped`/`_last_pid` 三個繞路的函式並在正文點名要收成一個——這不是 placeholder,是我寫壞了又發現的東西,與其假裝沒發生不如標記出來讓實作者刪掉。**更誠實的做法是我直接寫對**:那三個函式應該是
-
-```python
-def _reaped_pid():
-    """真的產生一個已被收屍的 pid——比猜一個大數字可靠。"""
-    p = subprocess.Popen(["/usr/bin/true"])
-    p.wait()
-    return p.pid
-```
-
-實作時用這一版。
+Task 1 Step 14 的 Python 消費者草稿裡本來有三個湊出 dead pid 的繞路函式(我寫壞的);已在同一份文件裡直接改成一個 `_reaped_pid()`,不留給實作者收拾。
 
 **3. Type consistency**
 
