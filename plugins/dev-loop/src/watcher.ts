@@ -143,10 +143,33 @@ export function ensureArmed(
   if (state === "running") {
     return ["already", pid];
   }
+  // Python 的 shlex.split() 對任何非字串都拒絕——實測每一種 JSON 型別:
+  //   "cmd" / "" / " "  -> 正常切開
+  //   [] [0] ["a"]      -> AttributeError: 'list' object has no attribute 'read'
+  //   {} {"a":1}        -> AttributeError: 'dict' object has no attribute 'read'
+  //   0 1               -> AttributeError: 'int' object has no attribute 'read'
+  //   1.5               -> AttributeError: 'float' object has no attribute 'read'
+  //   true false        -> AttributeError: 'bool' object has no attribute 'read'
+  //   null              -> ValueError: s argument must not be None
+  // 其中 falsy 的那些(""、[]、{}、0、false、null)根本走不到這裡,已在上面
+  // 的 pyTruthy 閘門回 skipped;真正會炸的是 truthy 的非字串([0]、{"a":1}、
+  // 1、1.5、true)。實測 ensure_armed 對 resume_exec=[0] 拋 AttributeError 且
+  // **不寫 pid 檔**。
+  //
+  // 這個檢查的位置很重要:Python 是在 shlex.split 那一刻才炸,也就是在
+  // watcherState 的 "already" 早退**之後**。實測 watcher 還活著時,
+  // resume_exec=[0] 回的是 ('already', pid),不拋錯。所以守衛只能放在這裡,
+  // 不能提前到函式開頭。
+  //
+  // 錯誤文字不必與 Python 一致(那個分歧已在 fixtures/parity/README.md 認可),
+  // 但必須是「真的拋」而不是回一個狀態碼——Python 就是拋。
+  if (typeof execStr !== "string") {
+    throw new TypeError(
+      `resume_exec must be a string, got ${Array.isArray(execStr) ? "array" : typeof execStr}`,
+    );
+  }
   const newPid = spawnWatcher(
-    // 非字串但 truthy 的 resume_exec(例如 [0])在 Python 是 shlex.split 拋
-    // AttributeError;那條路徑另案記錄,這裡不改變它的現況。
-    shlexSplit(execStr as string), heartbeat, watcherLogPath(checkpointPath));
+    shlexSplit(execStr), heartbeat, watcherLogPath(checkpointPath));
   const pidPath = watcherPidPath(checkpointPath);
   mkdirSync(dirname(pidPath), { recursive: true });
   writeFileSync(pidPath, String(newPid), "utf-8");

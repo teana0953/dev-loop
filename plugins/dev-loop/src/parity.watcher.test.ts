@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parityCases, resolveExpectation, expectSubset } from "./parityFixture.js";
-import { watcherState, lastWatcherAttempt } from "./watcher.js";
+import { ensureArmed, watcherState, lastWatcherAttempt } from "./watcher.js";
 
-const SECTIONS = ["watcherState", "lastWatcherAttempt"];
+const SECTIONS = ["ensureArmedWithoutSpawning", "watcherState", "lastWatcherAttempt"];
 
 /** 真的產生一個已被收屍的 pid——比猜一個大數字可靠。 */
 function reapedPid(): number {
@@ -23,6 +23,48 @@ function subst(v: unknown, self: number, dead: number): unknown {
   }
   return v;
 }
+
+/**
+ * ensureArmed 只有「skipped」與「拒絕」兩條路徑進得了 fixture。
+ *
+ * 第三條路徑(接受一個字串命令)會真的 spawn 一個背景行程,fixture harness
+ * 沒有對應的收尾機制,所以那半邊留在 watcher.test.ts 的單元測試裡。這個
+ * section 蒐集的是「不會 spawn 的那些輸入」——正因為不會 spawn,才守得住
+ *「拒絕的路徑一定不留下行程」:每個 case 都額外斷言 watcher.pid 不存在。
+ */
+describe("parity: ensureArmed without spawning", () => {
+  for (const c of parityCases("watcher", "ensureArmedWithoutSpawning", SECTIONS)) {
+    it(c.name, () => {
+      const { expect: want, throws } = resolveExpectation(c);
+      const dir = mkdtempSync(join(tmpdir(), "parity-watcher-"));
+      const cp = join(dir, "cp.json");
+      writeFileSync(cp, JSON.stringify({
+        phase: "apply", change_id: "c", branch: "b",
+        resume_exec: (c.input as Record<string, unknown>).resume_exec,
+      }), "utf-8");
+      if (throws) {
+        // 光用 toThrow() 太鬆:連「函式根本沒 import 進來」的 ReferenceError
+        // 都算通過(寫這條時真的先踩到一次)。所以額外檢查拋出來的不是那種
+        // 「測試自己壞掉」的錯。
+        let caught: unknown;
+        try {
+          ensureArmed(cp, { heartbeat: 1 });
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught, `${c.name}: 必須拋錯`).toBeInstanceOf(Error);
+        expect(caught).not.toBeInstanceOf(ReferenceError);
+      } else {
+        const [status, info] = ensureArmed(cp, { heartbeat: 1 });
+        expectSubset({ status, info }, want!, c.name);
+      }
+      expect(
+        existsSync(join(dir, "watcher.pid")),
+        `${c.name}: 不得寫下 pid 檔(也就是不得 spawn)`,
+      ).toBe(false);
+    });
+  }
+});
 
 describe("parity: watcherState", () => {
   for (const c of parityCases("watcher", "watcherState", SECTIONS)) {

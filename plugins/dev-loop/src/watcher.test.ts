@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,6 +93,35 @@ describe("ensureArmed", () => {
       // 沒 spawn 就不會有 pid 檔——這條才真的證明「沒留下行程」。
       expect(existsSync(watcherPidPath(file)), "不得 spawn").toBe(false);
     }
+  });
+
+  it("refuses a truthy non-string resume_exec instead of spawning a nonsense command", () => {
+    // Python 的 shlex.split 對非字串拋 AttributeError,所以 ensure_armed 是
+    // 「拋錯」而不是回一個狀態。實測 resume_exec=[0]:
+    //   PY ensure_armed -> AttributeError: 'list' object has no attribute 'read'
+    //   TS(修前)       -> ["armed", 28349],pid 檔寫下,detached 行程留著
+    // 只斷言有拋錯是不夠的——會漏掉「拋錯但已經 spawn」,所以每個 case 都
+    // 同時斷言沒有 pid 檔。
+    for (const bad of [[0], ["a"], { a: 1 }, 1, 1.5, true] as unknown[]) {
+      const file = fixture({ resume_exec: bad });
+      expect(
+        () => ensureArmed(file, { heartbeat: 1 }),
+        JSON.stringify(bad),
+      ).toThrow();
+      expect(
+        existsSync(watcherPidPath(file)),
+        `${JSON.stringify(bad)}: 拒絕的路徑不得留下 pid 檔`,
+      ).toBe(false);
+    }
+  });
+
+  it("checks the running watcher before it refuses, exactly where Python's shlex.split sits", () => {
+    // Python 是在 shlex.split 那一刻才炸,也就是在 "already" 早退之後。實測
+    // watcher 還活著時,resume_exec=[0] 回 ('already', <pid>) 而不拋錯。
+    // 守衛若提前到函式開頭,這條會變紅。
+    const file = fixture({ resume_exec: [0] as unknown as string });
+    writeFileSync(watcherPidPath(file), String(process.pid), "utf-8");
+    expect(ensureArmed(file, { heartbeat: 1 })).toEqual(["already", process.pid]);
   });
 
   it("treats an empty container exec override as absent, the way Python's `or` does", () => {
@@ -234,6 +263,32 @@ describe("ensureArmedAfterSave", () => {
     const pid = Number(readFileSync(watcherPidPath(armed), "utf-8"));
     await waitFor(() => !pidAlive(pid));
   }, 30000);
+
+  it("swallows a refused resume_exec into a stderr warning, without spawning", () => {
+    // Python 的 except Exception 把 shlex.split 的 AttributeError 收成一行
+    // stderr 警告——實測 _ensure_armed_after_save 對 resume_exec=[0] 印
+    // "warning: auto-arm failed: 'list' object has no attribute 'read'"
+    // 且不寫 pid 檔。auto-arm 失敗不該讓已經成功的主命令變成失敗。
+    const file = fixture({ resume_exec: [0] as unknown as string });
+    const errs: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      errs.push(String(chunk));
+      return true;
+    });
+    try {
+      ensureArmedAfterSave(
+        makeCheckpoint({
+          phase: "apply", change_id: "c", branch: "b",
+          resume_exec: [0] as unknown as string,
+        }),
+        file,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errs.join("")).toMatch(/^warning: auto-arm failed: /);
+    expect(existsSync(watcherPidPath(file)), "不得 spawn").toBe(false);
+  });
 
   it("does arm when nothing holds it back (the positive half of the gate)", async () => {
     // 三條早退各自都要有「不早退時真的會 arm」當對照,否則把任一條改成
