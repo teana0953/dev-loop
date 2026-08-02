@@ -262,6 +262,138 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       ],
     },
   ],
+  gate: [
+    {
+      name: "a passing gate",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/true",
+      ],
+    },
+    {
+      name: "a failing gate",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/false",
+      ],
+    },
+    {
+      // Python 印的是 list 的 repr(單引號、逗號後有空白),不是 JSON。
+      name: "a failing gate whose command name needs quoting in the report",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/bin/sh -c \"exit 1\"",
+      ],
+    },
+    {
+      // repr 的引號切換規則:含 ' 不含 " 改用雙引號外框;兩種都有才轉義 ';
+      // 反斜線一律轉義。sh 的多餘參數會落到 $0/$1 但照樣 exit 1。
+      name: "a failing gate whose args contain quotes and backslashes",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/bin/sh -c \"exit 1\" \"it's\" 'a'\"'\"'b\"c' 'back\\slash' ",
+      ],
+    },
+    {
+      name: "two --cmd values: the first failure short-circuits",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/false", "--cmd", "/usr/bin/true",
+      ],
+    },
+    {
+      // 順序相反:若只保留最後一個 --cmd,這條會「通過」而上面那條也會通過,
+      // 兩條合起來才釘死 append。
+      name: "two --cmd values where only the second fails",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/true", "--cmd", "/usr/bin/false",
+      ],
+    },
+    {
+      name: "append across the abbreviation and --cmd=value forms",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--c", "/usr/bin/true", "--cmd=/usr/bin/false",
+      ],
+    },
+    {
+      name: "escalation exits 3",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b", gate_failures: 1 }),
+        "--cmd", "/usr/bin/false", "--max-gate", "1",
+      ],
+    },
+    {
+      name: "no gate commands anywhere",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+      ],
+    },
+    {
+      name: "gate_cmds from config.json, shlex-split",
+      build: (dir) => {
+        const cp = writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" });
+        writeConfig(dir, { gate_cmds: ["/bin/sh -c 'exit 0'"] });
+        return ["gate", "--file", cp];
+      },
+    },
+    {
+      name: "an empty gate_cmds list must not pass vacuously",
+      build: (dir) => {
+        const cp = writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" });
+        writeConfig(dir, { gate_cmds: [] });
+        return ["gate", "--file", cp];
+      },
+    },
+    {
+      // --max/--max-gate 同時存在,所以 --ma 是 ambiguous(event 那組沒有
+      // --max-gate,量到的是不同答案)。
+      name: "--ma is ambiguous because gate has both --max and --max-gate",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/true", "--ma", "1",
+      ],
+    },
+    {
+      name: "a non-integer --max-gate",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/false", "--max-gate", "abc",
+      ],
+    },
+    {
+      // Python 的 subprocess.run(timeout=0) 立刻 TimeoutExpired;stdout 第二行
+      // 是 "timeout after 0s"。gate.ts 有對應的短路,這條把它接到 CLI 上。
+      name: "a zero --timeout reports a timeout, not a pass",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "/usr/bin/true", "--timeout", "0",
+      ],
+    },
+    {
+      // 執行檔不存在:兩邊都是未捕捉的例外(PY FileNotFoundError、TS ENOENT),
+      // stdout 空、exit 1。stderr 不比對,所以 traceback 文字差異無妨。
+      name: "a gate command whose executable does not exist",
+      build: (dir) => [
+        "gate", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+        "--cmd", "no-such-executable-xyz",
+      ],
+    },
+  ],
   archive: [
     {
       name: "archive fails identically for a nonexistent openspec change",

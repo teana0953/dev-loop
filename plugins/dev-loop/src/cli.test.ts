@@ -162,13 +162,14 @@ describe("cli status (delegated to Python — C1)", () => {
 describe("command routing", () => {
   it("routes every command it does not own to Python", async () => {
     const seen: string[][] = [];
-    // `gate` 還沒移植(下一個任務才會),所以它是這條「不屬於我就轉給
-    // Python」的樣本。原本用的是 `event`,而 event 已在本任務進 TS_COMMANDS。
-    const rc = await main(["gate", "--file", "x", "--cmd", "true"], {
+    // `status` 還沒移植(見 TS_COMMANDS 的註解:等 watcher 進 TS 才會完整
+    // 移植),所以它是這條「不屬於我就轉給 Python」的樣本。先前用的是
+    // `event`、再來是 `gate`,兩者都已陸續進 TS_COMMANDS。
+    const rc = await main(["status", "--file", "x"], {
       delegate: (argv) => { seen.push(argv); return 7; },
     });
     expect(rc).toBe(7);
-    expect(seen).toEqual([["gate", "--file", "x", "--cmd", "true"]]);
+    expect(seen).toEqual([["status", "--file", "x"]]);
   });
 
   it("routes an unknown command to Python rather than inventing its own error", async () => {
@@ -615,6 +616,230 @@ describe("event", () => {
     await main(["event", "--file", file, "--event", "apply_done"]);
     out.restore();
     expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(false);
+  });
+});
+
+/**
+ * gate 命令。
+ *
+ * 每條的預期值都抄自 Python 的實測輸出(`python3 -m devloop.cli gate ...`,
+ * 每次都用一個全新的暫存目錄——gate 會改 checkpoint,重用目錄量到的全是假的),
+ * 不是從 TS 實作反推的。
+ */
+describe("gate", () => {
+  function fixture(fields: Record<string, unknown> = {}, config?: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-gate-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "gate", change_id: "c1", branch: "b", ...fields }), file);
+    if (config) {
+      writeFileSync(join(dir, "config.json"), JSON.stringify(config), "utf-8");
+    }
+    return file;
+  }
+
+  function capture(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const s = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => s.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => s.mockRestore(),
+    };
+  }
+
+  it("passes, advances the phase, and exits 0", async () => {
+    // PY(實測):stdout "gate PASSED -> phase=qa iteration=1\n", exit 0
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main(["gate", "--file", file, "--cmd", "/usr/bin/true"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("gate PASSED -> phase=qa iteration=1\n");
+    expect(loadCheckpoint(file).phase).toBe("qa");
+  });
+
+  it("fails, bumps gate_failures, moves to fix, and exits 1", async () => {
+    // PY(實測)stdout 三行,中間那行是空的(result.output 是 ""):
+    //   gate FAILED: ['/usr/bin/false']
+    //   <空行>
+    //   phase=fix iteration=0
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main(["gate", "--file", file, "--cmd", "/usr/bin/false"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=fix iteration=0\n");
+    const cp = loadCheckpoint(file);
+    expect(cp.gate_failures).toBe(1);
+    expect(cp.phase).toBe("fix");
+  });
+
+  it("exits 3 — not 1 — once the failure budget is spent", async () => {
+    // escalated 與一般 fail 必須可區分:3 專屬升級。混在一起的話編排端
+    // 會把「已經放棄、要人接手」誤當成「再修一輪」。
+    // PY(實測):"gate FAILED: ['/usr/bin/false']\n\nphase=escalated iteration=0\n", exit 3
+    const file = fixture({ gate_failures: 1 });
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--cmd", "/usr/bin/false", "--max-gate", "1",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(3);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=escalated iteration=0\n");
+    expect(loadCheckpoint(file).phase).toBe("escalated");
+  });
+
+  it("falls back to config.json gate_cmds when --cmd is absent", async () => {
+    // PY(實測):"gate PASSED -> phase=qa iteration=1\n", exit 0
+    const file = fixture({}, { gate_cmds: ["/usr/bin/true"] });
+    const out = capture("stdout");
+    const rc = await main(["gate", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("gate PASSED -> phase=qa iteration=1\n");
+  });
+
+  it("refuses to run with no gate commands at all, instead of passing vacuously", async () => {
+    // 空清單進 runGate 恆 pass:那是假綠,比失敗更糟。
+    // PY(實測)stderr:
+    //   error: no gate commands: pass --cmd or set gate_cmds in .devloop/config.json
+    // exit 2,checkpoint 完全沒動。
+    const file = fixture({}, { gate_cmds: [] });
+    const err = capture("stderr");
+    const rc = await main(["gate", "--file", file]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe(
+      "error: no gate commands: pass --cmd or set gate_cmds in .devloop/config.json\n");
+    expect(loadCheckpoint(file).phase).toBe("gate");
+    expect(loadCheckpoint(file).gate_failures).toBe(0);
+  });
+
+  it("also refuses when neither --cmd nor a config.json exists at all", async () => {
+    // PY(實測,brief step 1 第三條):同一則訊息、exit 2。
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["gate", "--file", file]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe(
+      "error: no gate commands: pass --cmd or set gate_cmds in .devloop/config.json\n");
+  });
+
+  it("splits each configured command with shlex, not on spaces", async () => {
+    // `/bin/sh -c 'exit 0'` 用空白切會變成 ["/bin/sh","-c","'exit","0'"],
+    // sh 會拿 "'exit" 當程式碼 -> 非 0 -> 這條會變成 exit 1。
+    // PY(實測):"gate PASSED -> phase=qa iteration=1\n", exit 0
+    const file = fixture({}, { gate_cmds: ["/bin/sh -c 'exit 0'"] });
+    const out = capture("stdout");
+    const rc = await main(["gate", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("gate PASSED -> phase=qa iteration=1\n");
+  });
+
+  it("runs EVERY --cmd, not just the last one (argparse action=append)", async () => {
+    // `--cmd a --cmd b` 只跑 b 是靜默少跑一條 gate,沒有任何錯誤訊號。
+    // PY(實測):第一條就失敗並短路 -> "gate FAILED: ['/usr/bin/false']"
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--cmd", "/usr/bin/false", "--cmd", "/usr/bin/true",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=fix iteration=0\n");
+  });
+
+  it("keeps appending across the --cmd=value and abbreviation forms", async () => {
+    // 實測 argparse:`--c a --c=b` -> cmd == ['a','b'](縮寫與 = 形式都照樣 append)。
+    // 若 repeated 只收「長名 + 空白」那一種寫法,這裡會退化成只跑 /usr/bin/true。
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--c", "/usr/bin/true", "--cmd=/usr/bin/false",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe("gate FAILED: ['/usr/bin/false']\n\nphase=fix iteration=0\n");
+  });
+
+  it("prints failed_command as a Python list repr, not JSON", async () => {
+    // Python 的 `print("%s" % list)` 走 repr:單引號、逗號後有空白。
+    // 實測:`--cmd '/bin/sh -c "exit 1"'` -> gate FAILED: ['/bin/sh', '-c', 'exit 1']
+    // JSON.stringify 會給 ["/bin/sh","-c","exit 1"] —— 三處都不一樣。
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main(["gate", "--file", file, "--cmd", '/bin/sh -c "exit 1"']);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed.split("\n")[0]).toBe("gate FAILED: ['/bin/sh', '-c', 'exit 1']");
+  });
+
+  it("switches the repr's quote style when the string contains a single quote", async () => {
+    // Python 的 repr 對含單引號的字串改用雙引號外框且**不**轉義那個單引號;
+    // 兩種引號都有時才回到單引號外框並把 ' 轉義成 \';反斜線一律轉義。
+    // 這三條規則寫錯的話,只有在 gate 失敗當下才會被看到 —— 也就是最需要
+    // 這段輸出可讀的時候。`/bin/sh -c "exit 1" ...` 的額外參數會落到 $0/$1,
+    // sh 照樣 exit 1,所以它們會原樣進 failed_command。
+    //
+    // PY 實測(cmd 字串與下面完全相同):
+    //   shlex.split -> ['/bin/sh', '-c', 'exit 1', "it's", 'a\'b"c', 'back\\slash']
+    //   stdout 首行 -> gate FAILED: ['/bin/sh', '-c', 'exit 1', "it's", 'a\'b"c', 'back\\slash']
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main([
+      "gate", "--file", file, "--cmd",
+      "/bin/sh -c \"exit 1\" \"it's\" 'a'\"'\"'b\"c' 'back\\slash' ",
+    ]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed.split("\n")[0]).toBe(
+      "gate FAILED: ['/bin/sh', '-c', 'exit 1', \"it's\", 'a\\'b\"c', 'back\\\\slash']");
+  });
+
+  it("rejects a non-integer --max-gate/--timeout the way argparse does", async () => {
+    // PY(實測):devloop gate: error: argument --max-gate: invalid int value: 'abc',exit 2
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main([
+      "gate", "--file", file, "--cmd", "/usr/bin/false", "--max-gate", "abc",
+    ]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: argument --max-gate: invalid int value: 'abc'\n");
+    // 拒絕的命令一步都不能推進
+    expect(loadCheckpoint(file).phase).toBe("gate");
+  });
+
+  it("reports --ma as ambiguous, because gate has both --max and --max-gate", async () => {
+    // 實測 argparse(gate 的旗標集):ambiguous option: --ma could match --max, --max-gate
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["gate", "--file", file, "--cmd", "/usr/bin/true", "--ma", "1"]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe("error: ambiguous option: --ma could match --max, --max-gate\n");
+    expect(loadCheckpoint(file).phase).toBe("gate");
+  });
+
+  it("requires --file", async () => {
+    const err = capture("stderr");
+    const rc = await main(["gate", "--cmd", "/usr/bin/true"]);
+    err.restore();
+    expect(rc).toBe(2);
   });
 });
 

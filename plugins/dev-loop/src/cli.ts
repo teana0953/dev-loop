@@ -12,6 +12,9 @@ import {
   QA_SKIP,
   HUMAN_RESUME_PROPOSE,
   HUMAN_RESUME_FIX,
+  GATE_PASS,
+  GATE_FAIL,
+  GATE_RETRY_EXCEEDED,
   DEFAULT_MAX_ITERATIONS,
 } from "./statemachine.js";
 import { ensureArmedAfterSave } from "./watcher.js";
@@ -20,8 +23,10 @@ import { archiveChange } from "./openspec.js";
 import type { OpenSpecResult } from "./openspec.js";
 import { archiveWorkfiles as archiveWorkfilesReal } from "./housekeeping.js";
 import { pendingUnits, type Unit } from "./units.js";
-import { loadConfig, resolveModel } from "./config.js";
+import { loadConfig, resolveModel, validateGateCmds } from "./config.js";
 import { pyIndex, pyTruthy } from "./jsonio.js";
+import { runGate } from "./gate.js";
+import { shlexSplit } from "./shlex.js";
 
 /**
  * 本引擎自己處理的子命令。其餘一律委派回 Python。
@@ -38,7 +43,7 @@ import { pyIndex, pyTruthy } from "./jsonio.js";
  * silent regressions. Status stays on Python until the `watcher` module is
  * ported (next milestone) and a full port can be done properly.
  */
-export const TS_COMMANDS = ["archive", "units-status", "model", "event"] as const;
+export const TS_COMMANDS = ["archive", "units-status", "model", "event", "gate"] as const;
 
 export interface CliDeps {
   delegate: (argv: string[]) => number;
@@ -245,6 +250,131 @@ function cmdEvent(
 }
 
 /**
+ * gate 命令來源:CLI `--cmd` 優先(Python 是 `if args.cmd:` —— truthy 檢查,
+ * 也就是「有給任何一個 --cmd」),否則 config 的 gate_cmds;皆無或非法 →
+ * 丟錯讓呼叫端回 2。**空命令清單絕不能進 runGate** —— runGate 對空 list 恆回
+ * passed=true(模組層的語意,見 gate.ts 的註解),那是假綠。
+ */
+function resolveGateCmds(cmds: string[], file: string): string[] {
+  if (cmds.length > 0) {
+    return cmds;
+  }
+  const config = loadConfig(join(dirname(file), "config.json"));
+  const resolved = validateGateCmds(config.gate_cmds);
+  if (resolved.length === 0) {
+    throw new Error(
+      "no gate commands: pass --cmd or set gate_cmds in .devloop/config.json");
+  }
+  return resolved;
+}
+
+/**
+ * Python 只接 `except ValueError`。JSONDecodeError 是 ValueError 的子類,所以
+ * 壞掉的 config.json 走 exit 2;PermissionError(OSError)不是,走未捕捉例外
+ * exit 1。實測(config.json 內容 "not json" vs. chmod 000):
+ *   壞 JSON  -> "error: Expecting value: line 1 column 1 (char 0)", exit 2
+ *   不可讀   -> PermissionError traceback, exit 1
+ * TS 這側:JSON.parse 丟 SyntaxError(沒有 `code`),fs 丟的 ErrnoException 有
+ * `code`("EACCES"/"EISDIR"…)。用 `code` 的有無把兩類分開,才不會把 Python
+ * 會讓它炸掉的 I/O 失敗悄悄變成 exit 2。
+ */
+function isOsError(exc: unknown): boolean {
+  return typeof (exc as NodeJS.ErrnoException | null)?.code === "string";
+}
+
+function cmdGate(
+  file: string, cmds: string[], max: number, maxGate: number, timeout: number,
+): number {
+  const cp = loadCheckpoint(file);
+  let resolved: string[];
+  try {
+    resolved = resolveGateCmds(cmds, file);
+  } catch (exc) {
+    if (isOsError(exc)) {
+      throw exc;
+    }
+    process.stderr.write(`error: ${String((exc as Error).message)}\n`);
+    return 2;
+  }
+  // shlexSplit,不是 c.split(" "):`/bin/sh -c 'exit 0'` 用空白切會變成
+  // ["/bin/sh","-c","'exit","0'"],sh 拿到的是壞掉的程式碼 —— gate 於是
+  // 「失敗」得毫無道理,而且只在 config 用了引號時才發生。
+  const result = runGate(resolved.map((c) => shlexSplit(c)), { timeout });
+  const fromPhase = cp.phase;
+  let event: string;
+  if (result.passed) {
+    event = GATE_PASS;
+  } else {
+    cp.gate_failures += 1;
+    event = cp.gate_failures > maxGate ? GATE_RETRY_EXCEEDED : GATE_FAIL;
+  }
+  applyEvent(cp, event, max);
+  saveWithHistory(cp, file, event, fromPhase);
+  if (!result.passed) {
+    // Python:`print("gate FAILED: %s" % result.failed_command)` —— list 的
+    // repr,不是 JSON。failed_command 在 passed=false 時必為非 null。
+    process.stdout.write(
+      `gate FAILED: ${pyReprStrList(result.failed_command ?? [])}\n`);
+    process.stdout.write(`${result.output}\n`);
+    process.stdout.write(`phase=${cp.phase} iteration=${cp.iteration}\n`);
+    // escalated 與一般 fail 必須可區分:exit 3 專屬升級,1 為轉 fix。
+    return cp.phase === "escalated" ? 3 : 1;
+  }
+  process.stdout.write(`gate PASSED -> phase=${cp.phase} iteration=${cp.iteration}\n`);
+  return 0;
+}
+
+/**
+ * Python 對「一個 str」的 repr。gate 失敗時 Python 印的是
+ * `print("gate FAILED: %s" % result.failed_command)`,對 list 走的是 repr,
+ * 而 list 的 repr 又對每個元素走 str 的 repr —— 不是 JSON。
+ *
+ * 實測 Python 3.14 的規則(`repr(s)`):
+ *   "it's"        -> "it's"        含 ' 而不含 " 時改用雙引號外框,' **不**轉義
+ *   'a\'b"c'      -> 'a\'b"c'      兩種引號都有時回到單引號外框並把 ' 轉義
+ *   'a"b'         -> 'a"b'         只含 " 時 " 不轉義
+ *   'back\\slash' -> 'back\\slash' 反斜線一律轉義(且必須最先處理)
+ *   '\t' '\n' '\r'-> '\t' '\n' '\r' 這三個有專屬短寫法
+ *   '\x01' '\x7f' -> '\x01' '\x7f' 其餘控制字元走 \xNN
+ *   'é' '中'      -> 'é' '中'      可列印的非 ASCII 原樣保留
+ *
+ * 已知未涵蓋:非可列印的非 ASCII(U+00A0、U+200B 之類,Python 走 \xa0 /
+ * ​)。判定需要 unicodedata 的 category 表,而這裡的輸入是 shlex 切出來的
+ * 執行檔路徑與 shell 參數,實務上到不了那裡;真到了,分歧也只出現在錯誤訊息的
+ * 字面上,不影響 exit code 或 checkpoint。
+ */
+function pyReprStr(s: string): string {
+  const hasSingle = s.includes("'");
+  const hasDouble = s.includes('"');
+  const quote = hasSingle && !hasDouble ? '"' : "'";
+  let body = "";
+  for (const ch of s) {
+    if (ch === "\\") {
+      body += "\\\\";
+    } else if (ch === quote) {
+      body += `\\${ch}`;
+    } else if (ch === "\n") {
+      body += "\\n";
+    } else if (ch === "\r") {
+      body += "\\r";
+    } else if (ch === "\t") {
+      body += "\\t";
+    } else {
+      const code = ch.codePointAt(0) as number;
+      body += code < 0x20 || code === 0x7f
+        ? `\\x${code.toString(16).padStart(2, "0")}`
+        : ch;
+    }
+  }
+  return `${quote}${body}${quote}`;
+}
+
+/** Python 印一個 list of str:`['a', 'b']` —— 單引號、逗號後有空白。 */
+function pyReprStrList(items: string[]): string {
+  return `[${items.map(pyReprStr).join(", ")}]`;
+}
+
+/**
  * argparse 的 `_parse_optional`:哪一種 token 會被當成「另一個旗標」因而**不能**
  * 拿來當前一個旗標的值。實測(argparse.ArgumentParser,無 negative-number 選項):
  *   "-"        -> 值(單獨一個減號不是選項)
@@ -321,8 +451,30 @@ function resolveFlagName(
 function parseArgs(
   rest: string[],
   known: readonly string[],
-): { values: Map<string, string>; unknown: string[]; error: string | null } {
+): {
+  values: Map<string, string>;
+  repeated: Map<string, string[]>;
+  unknown: string[];
+  error: string | null;
+} {
   const values = new Map<string, string>();
+  /**
+   * argparse 的 `action="append"`(gate 的 `--cmd`):每一次出現都要保留,
+   * `values` 的後蓋前語意在這裡是靜默少跑一條 gate 命令 —— 沒有任何錯誤訊號。
+   * 累積發生在「旗標名解析完之後」,所以 `--cmd=a`、`--c a` 這些縮寫/等號寫法
+   * 都照樣 append(實測 argparse:`--c a --c=b` -> `['a','b']`)。
+   * store 型的旗標也會進這裡,只是沒有呼叫端去看它,行為不變。
+   */
+  const repeated = new Map<string, string[]>();
+  const record = (name: string, value: string): void => {
+    values.set(name, value);
+    const seen = repeated.get(name);
+    if (seen === undefined) {
+      repeated.set(name, [value]);
+    } else {
+      seen.push(value);
+    }
+  };
   const unknown: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i] as string;
@@ -341,6 +493,7 @@ function parseArgs(
     if ("ambiguous" in match) {
       return {
         values,
+        repeated,
         unknown,
         error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`,
       };
@@ -348,21 +501,22 @@ function parseArgs(
     if (eq !== -1) {
       // `--flag=` 的值是空字串,不是「沒給值」——實測 argparse 存下 ""
       // (`--max=` 因此走 "invalid int value: ''",不是 "expected one argument")。
-      values.set(match.resolved, tok.slice(eq + 1));
+      record(match.resolved, tok.slice(eq + 1));
       continue;
     }
     const next = rest[i + 1];
     if (next === undefined || looksLikeFlag(next)) {
       return {
         values,
+        repeated,
         unknown,
         error: `argument ${match.resolved}: expected one argument`,
       };
     }
-    values.set(match.resolved, next);
+    record(match.resolved, next);
     i += 1;
   }
-  return { values, unknown, error: null };
+  return { values, repeated, unknown, error: null };
 }
 
 /**
@@ -509,6 +663,40 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
       return 2;
     }
     return cmdEvent(file, event, max, finishMode);
+  }
+  if (cmd === "gate") {
+    const { values, repeated, unknown, error } = parseArgs(
+      rest, ["--file", "--cmd", "--max", "--max-gate", "--timeout"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === undefined) {
+      process.stderr.write("gate requires --file\n");
+      return 2;
+    }
+    // 逐一短路,不是三個都算完再一起檢查:argparse 碰到第一個非法整數就
+    // error() 並結束,只印一則訊息。三個都算會印三則。
+    const max = parseIntFlag(values, "--max", DEFAULT_MAX_ITERATIONS);
+    if (max === null) {
+      return 2;
+    }
+    const maxGate = parseIntFlag(values, "--max-gate", DEFAULT_MAX_ITERATIONS);
+    if (maxGate === null) {
+      return 2;
+    }
+    const timeout = parseIntFlag(values, "--timeout", 600);
+    if (timeout === null) {
+      return 2;
+    }
+    // `--cmd` 是 argparse 的 action="append":每一次出現都要跑,所以讀 repeated
+    // 而不是 values。values 的後蓋前會靜默少跑一條 gate 命令。
+    return cmdGate(file, repeated.get("--cmd") ?? [], max, maxGate, timeout);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);

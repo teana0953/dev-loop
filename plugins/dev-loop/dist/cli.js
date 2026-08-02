@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname as dirname5, join as join4, resolve } from "node:path";
@@ -288,6 +288,12 @@ function loadConfig(path) {
     models
   };
 }
+function validateGateCmds(gateCmds) {
+  if (!Array.isArray(gateCmds) || !gateCmds.every((c) => typeof c === "string" && c.trim() !== "")) {
+    throw new Error(`gate_cmds must be a list of non-empty strings, got ${JSON.stringify(gateCmds)}`);
+  }
+  return gateCmds;
+}
 
 // src/pystr.ts
 var PY_STR_WS = "\\t\\n\\v\\f\\r\\x1c\\x1d\\x1e\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
@@ -562,13 +568,56 @@ function pendingUnits(units) {
   return units.filter((u) => PENDING.includes(pyIndex(u, "status")));
 }
 
+// src/gate.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+var defaultRunner2 = (cmd, cwd, timeout) => {
+  const nonPositiveTimeout = timeout <= 0;
+  const [head, ...rest] = cmd;
+  const proc = spawnSync2(head, rest, {
+    cwd,
+    encoding: "utf8",
+    timeout: nonPositiveTimeout ? 1 : timeout * 1e3,
+    // Python 的 subprocess.run 對輸出量沒有上限;Node 預設 1 MiB,超過就把
+    // 整個 spawnSync 變成 error.code === "ENOBUFS"。實測寫 2 MiB 並 exit 1:
+    //   PY run_gate -> passed=False, len(output)=2097152
+    //   TS runGate  -> throw "spawnSync ... ENOBUFS"(邊界:1048576 過、1048577 炸)
+    // `pytest -v` / `npm test` 本身就常常超過 1 MiB,這是常態不是邊角。
+    maxBuffer: Infinity
+  });
+  const timedOut = nonPositiveTimeout || proc.error?.code === "ETIMEDOUT";
+  const spawnFailed = proc.error && proc.error.code !== "ETIMEDOUT";
+  if (spawnFailed) {
+    throw proc.error;
+  }
+  return {
+    code: proc.status,
+    stdout: proc.stdout ?? "",
+    stderr: proc.stderr ?? "",
+    timedOut
+  };
+};
+function runGate(commands, opts = {}) {
+  const timeout = opts.timeout ?? 600;
+  const run2 = opts.runner ?? defaultRunner2;
+  for (const cmd of commands) {
+    const r = run2(cmd, opts.cwd, timeout);
+    if (r.timedOut) {
+      return { passed: false, failed_command: cmd, output: `timeout after ${timeout}s` };
+    }
+    if (r.code !== 0) {
+      return { passed: false, failed_command: cmd, output: r.stdout + r.stderr };
+    }
+  }
+  return { passed: true, failed_command: null, output: "" };
+}
+
 // src/cli.ts
-var TS_COMMANDS = ["archive", "units-status", "model", "event"];
+var TS_COMMANDS = ["archive", "units-status", "model", "event", "gate"];
 function delegateToPython(argv) {
   const root = dirname5(dirname5(fileURLToPath2(import.meta.url)));
   const sep = process.platform === "win32" ? ";" : ":";
   const existing = process.env.PYTHONPATH;
-  const proc = spawnSync2("python3", ["-m", "devloop.cli", ...argv], {
+  const proc = spawnSync3("python3", ["-m", "devloop.cli", ...argv], {
     stdio: "inherit",
     env: { ...process.env, PYTHONPATH: existing ? `${root}${sep}${existing}` : root }
   });
@@ -681,6 +730,87 @@ function cmdEvent(file, event, max, finishMode) {
 `);
   return 0;
 }
+function resolveGateCmds(cmds, file) {
+  if (cmds.length > 0) {
+    return cmds;
+  }
+  const config = loadConfig(join4(dirname5(file), "config.json"));
+  const resolved = validateGateCmds(config.gate_cmds);
+  if (resolved.length === 0) {
+    throw new Error(
+      "no gate commands: pass --cmd or set gate_cmds in .devloop/config.json"
+    );
+  }
+  return resolved;
+}
+function isOsError(exc) {
+  return typeof exc?.code === "string";
+}
+function cmdGate(file, cmds, max, maxGate, timeout) {
+  const cp = loadCheckpoint(file);
+  let resolved;
+  try {
+    resolved = resolveGateCmds(cmds, file);
+  } catch (exc) {
+    if (isOsError(exc)) {
+      throw exc;
+    }
+    process.stderr.write(`error: ${String(exc.message)}
+`);
+    return 2;
+  }
+  const result = runGate(resolved.map((c) => shlexSplit(c)), { timeout });
+  const fromPhase = cp.phase;
+  let event;
+  if (result.passed) {
+    event = GATE_PASS;
+  } else {
+    cp.gate_failures += 1;
+    event = cp.gate_failures > maxGate ? GATE_RETRY_EXCEEDED : GATE_FAIL;
+  }
+  applyEvent(cp, event, max);
+  saveWithHistory(cp, file, event, fromPhase);
+  if (!result.passed) {
+    process.stdout.write(
+      `gate FAILED: ${pyReprStrList(result.failed_command ?? [])}
+`
+    );
+    process.stdout.write(`${result.output}
+`);
+    process.stdout.write(`phase=${cp.phase} iteration=${cp.iteration}
+`);
+    return cp.phase === "escalated" ? 3 : 1;
+  }
+  process.stdout.write(`gate PASSED -> phase=${cp.phase} iteration=${cp.iteration}
+`);
+  return 0;
+}
+function pyReprStr(s) {
+  const hasSingle = s.includes("'");
+  const hasDouble = s.includes('"');
+  const quote = hasSingle && !hasDouble ? '"' : "'";
+  let body = "";
+  for (const ch of s) {
+    if (ch === "\\") {
+      body += "\\\\";
+    } else if (ch === quote) {
+      body += `\\${ch}`;
+    } else if (ch === "\n") {
+      body += "\\n";
+    } else if (ch === "\r") {
+      body += "\\r";
+    } else if (ch === "	") {
+      body += "\\t";
+    } else {
+      const code = ch.codePointAt(0);
+      body += code < 32 || code === 127 ? `\\x${code.toString(16).padStart(2, "0")}` : ch;
+    }
+  }
+  return `${quote}${body}${quote}`;
+}
+function pyReprStrList(items) {
+  return `[${items.map(pyReprStr).join(", ")}]`;
+}
 function looksLikeFlag(tok) {
   if (!tok.startsWith("-") || tok === "-") {
     return false;
@@ -705,6 +835,16 @@ function resolveFlagName(name, known) {
 }
 function parseArgs(rest, known) {
   const values = /* @__PURE__ */ new Map();
+  const repeated = /* @__PURE__ */ new Map();
+  const record = (name, value) => {
+    values.set(name, value);
+    const seen = repeated.get(name);
+    if (seen === void 0) {
+      repeated.set(name, [value]);
+    } else {
+      seen.push(value);
+    }
+  };
   const unknown = [];
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
@@ -722,26 +862,28 @@ function parseArgs(rest, known) {
     if ("ambiguous" in match) {
       return {
         values,
+        repeated,
         unknown,
         error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`
       };
     }
     if (eq !== -1) {
-      values.set(match.resolved, tok.slice(eq + 1));
+      record(match.resolved, tok.slice(eq + 1));
       continue;
     }
     const next = rest[i + 1];
     if (next === void 0 || looksLikeFlag(next)) {
       return {
         values,
+        repeated,
         unknown,
         error: `argument ${match.resolved}: expected one argument`
       };
     }
-    values.set(match.resolved, next);
+    record(match.resolved, next);
     i += 1;
   }
-  return { values, unknown, error: null };
+  return { values, repeated, unknown, error: null };
 }
 function rawFlag(values, name) {
   return values.get(name);
@@ -850,6 +992,40 @@ async function dispatch(argv, deps) {
       return 2;
     }
     return cmdEvent(file, event, max, finishMode);
+  }
+  if (cmd === "gate") {
+    const { values, repeated, unknown, error } = parseArgs(
+      rest,
+      ["--file", "--cmd", "--max", "--max-gate", "--timeout"]
+    );
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === void 0) {
+      process.stderr.write("gate requires --file\n");
+      return 2;
+    }
+    const max = parseIntFlag(values, "--max", DEFAULT_MAX_ITERATIONS);
+    if (max === null) {
+      return 2;
+    }
+    const maxGate = parseIntFlag(values, "--max-gate", DEFAULT_MAX_ITERATIONS);
+    if (maxGate === null) {
+      return 2;
+    }
+    const timeout = parseIntFlag(values, "--timeout", 600);
+    if (timeout === null) {
+      return 2;
+    }
+    return cmdGate(file, repeated.get("--cmd") ?? [], max, maxGate, timeout);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);
