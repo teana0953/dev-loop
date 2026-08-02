@@ -26,6 +26,30 @@ function reapedPid(): number {
   return proc.pid as number;
 }
 
+/**
+ * 「這個呼叫必須拋錯」的斷言。**不要**直接用 `expect(fn).toThrow()`。
+ *
+ * 裸的 toThrow() 連「測試自己壞掉」都算通過:呼叫一個不存在的名字會拋
+ * ReferenceError,那也是一個 throw。實測把 `pidAlive` 改成 `pidAliveTYPO`、
+ * 把 `ensureArmed` 改成 `ensureArmedTYPO`,兩條測試都照樣全綠——也就是說它們
+ * 當時根本沒有在測任何東西。Python 那側是同一個洞的另一種長相(存取不存在的
+ * 模組屬性拋 AttributeError,正好落在 pytest.raises 的預期集合裡)。
+ *
+ * 這裡把 ReferenceError 明確排除,踩到就會紅。
+ */
+function expectThrows(fn: () => unknown, label: string): unknown {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught, `${label}: 必須拋錯`).toBeInstanceOf(Error);
+  expect(caught, `${label}: 拋的是 ReferenceError —— 測試自己壞了,不是受測行為`)
+    .not.toBeInstanceOf(ReferenceError);
+  return caught;
+}
+
 async function waitFor(pred: () => boolean, tries = 200): Promise<void> {
   for (let i = 0; i < tries && !pred(); i += 1) {
     await new Promise((r) => setTimeout(r, 50));
@@ -49,7 +73,7 @@ describe("pidAlive", () => {
     //   OverflowError: Python int too large to convert to C int
     // Node 對應的是 TypeError ERR_INVALID_ARG_TYPE(實測)。吞掉它會讓
     //「pid 檔壞掉」被誤判成「watcher 死了」,於是重複 spawn。
-    expect(() => pidAlive(2 ** 63)).toThrow();
+    expectThrows(() => pidAlive(2 ** 63), "pidAlive(2**63)");
   });
 });
 
@@ -104,10 +128,7 @@ describe("ensureArmed", () => {
     // 同時斷言沒有 pid 檔。
     for (const bad of [[0], ["a"], { a: 1 }, 1, 1.5, true] as unknown[]) {
       const file = fixture({ resume_exec: bad });
-      expect(
-        () => ensureArmed(file, { heartbeat: 1 }),
-        JSON.stringify(bad),
-      ).toThrow();
+      expectThrows(() => ensureArmed(file, { heartbeat: 1 }), JSON.stringify(bad));
       expect(
         existsSync(watcherPidPath(file)),
         `${JSON.stringify(bad)}: 拒絕的路徑不得留下 pid 檔`,

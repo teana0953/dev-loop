@@ -14,6 +14,28 @@ function reapedPid(): number {
   return proc.pid as number;
 }
 
+/**
+ * 「這個呼叫必須拋錯」的斷言。**不要**直接用 `expect(fn).toThrow()`。
+ *
+ * 裸的 toThrow() 連「測試自己壞掉」都算通過:呼叫一個不存在的名字會拋
+ * ReferenceError,那也是一個 throw。實測把這裡的 `ensureArmed` 改成
+ * `ensureArmedTYPO`,六條 reject case 會全綠——等於什麼都沒測。
+ * watcher.test.ts 有一份同樣的 helper(測試檔之間不能互相 import,
+ * 一 import 就會把對方的 describe 也跑一遍)。
+ */
+function expectThrows(fn: () => unknown, label: string): unknown {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught, `${label}: 必須拋錯`).toBeInstanceOf(Error);
+  expect(caught, `${label}: 拋的是 ReferenceError —— 測試自己壞了,不是受測行為`)
+    .not.toBeInstanceOf(ReferenceError);
+  return caught;
+}
+
 /** pid 值無法寫死在 fixture 裡,兩側各自把 <SELF>/<DEAD> 換成實際值。 */
 function subst(v: unknown, self: number, dead: number): unknown {
   if (v === "<SELF>") return self;
@@ -43,17 +65,7 @@ describe("parity: ensureArmed without spawning", () => {
         resume_exec: (c.input as Record<string, unknown>).resume_exec,
       }), "utf-8");
       if (throws) {
-        // 光用 toThrow() 太鬆:連「函式根本沒 import 進來」的 ReferenceError
-        // 都算通過(寫這條時真的先踩到一次)。所以額外檢查拋出來的不是那種
-        // 「測試自己壞掉」的錯。
-        let caught: unknown;
-        try {
-          ensureArmed(cp, { heartbeat: 1 });
-        } catch (e) {
-          caught = e;
-        }
-        expect(caught, `${c.name}: 必須拋錯`).toBeInstanceOf(Error);
-        expect(caught).not.toBeInstanceOf(ReferenceError);
+        expectThrows(() => ensureArmed(cp, { heartbeat: 1 }), c.name);
       } else {
         const [status, info] = ensureArmed(cp, { heartbeat: 1 });
         expectSubset({ status, info }, want!, c.name);

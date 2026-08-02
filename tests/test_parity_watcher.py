@@ -39,19 +39,25 @@ def test_ensure_armed_without_spawning_parity(case, tmp_path):
     不留下行程」這件事:每個 case 都額外斷言 watcher.pid 不存在。
     """
     expect, throws = resolve_expectation(case, "py")
+    # 先把 callable 解出來,再進 raises 區塊。這一行不是風格問題:
+    # `with pytest.raises(AttributeError): watcher.ensure_armed_TYPO(...)` 會
+    # 全綠——存取不存在的模組屬性拋的正是 AttributeError,也就是測試「自己壞掉」
+    # 的錯誤,恰好落在預期的例外集合裡。實測把呼叫改成不存在的名字,36 條
+    # 全過。名字在區塊外解析,打錯就會在這裡炸,而不是被當成預期行為吞掉。
+    ensure_armed = watcher.ensure_armed
     cp = tmp_path / "cp.json"
     cp.write_text(json.dumps({
         "phase": "apply", "change_id": "c", "branch": "b",
         "resume_exec": case["input"]["resume_exec"],
     }))
     if throws:
-        # 不用裸的 Exception:那連「測試自己壞掉」的 NameError 都算通過
-        # (寫這條時真的先踩到一次)。Python 這側實際拋的是 shlex.split 的
-        # AttributeError,None 那種是 ValueError。
+        # 不用裸的 Exception:那連「測試自己壞掉」的 NameError 都算通過。
+        # Python 這側實際拋的是 shlex.split 的 AttributeError,None 那種是
+        # ValueError。集合不再放寬——放寬只會把上面那個洞再挖開一次。
         with pytest.raises((AttributeError, TypeError, ValueError)):
-            watcher.ensure_armed(str(cp), heartbeat=1)
+            ensure_armed(str(cp), heartbeat=1)
     else:
-        status, info = watcher.ensure_armed(str(cp), heartbeat=1)
+        status, info = ensure_armed(str(cp), heartbeat=1)
         assert_subset({"status": status, "info": info}, expect, case["name"])
     assert not (tmp_path / "watcher.pid").exists(), (
         "%s: 不得寫下 pid 檔(也就是不得 spawn)" % case["name"])
