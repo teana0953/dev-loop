@@ -48,14 +48,39 @@ describe("parity: runWatcher", () => {
   }
 });
 
+/**
+ * 這一段本來只做「開一個 temp dir、**不**把它交給 runWatcher、然後斷言它是空的」
+ * ——那對任何實作都成立,包括一個把 log 寫死到別處的實作,也包括一個 appendLog
+ * 什麼都不做的實作。改成先跑一次「有 logPath」的,釘住檔案確實出現在**指定的
+ * 那個路徑**且行數等於嘗試次數(這條就把「寫死路徑」與「根本沒寫」兩種實作
+ * 打掉),再跑一次「無 logPath」的,釘住同一個檔案 byte 不變、目錄裡也沒多出
+ * 別的檔案。
+ */
 describe("parity: runWatcher without a log path", () => {
   for (const c of parityCases("adapter", "noLogPath", SECTIONS)) {
     it(c.name, async () => {
       const { expect: want } = resolveExpectation(c);
       const dir = mkdtempSync(join(tmpdir(), "adapter-"));
-      const { returned, slept } = await drive(c, undefined);
-      expectSubset({ returned, slept }, want!, c.name);
-      expect(readdirSync(dir), "logPath 為空時不該寫任何檔案").toEqual([]);
+      const logPath = join(dir, "w.jsonl");
+
+      const logged = await drive(c, logPath);
+      const linesAfterLogged = logged.entries.length;
+      const bytesAfterLogged = readFileSync(logPath);
+
+      const unlogged = await drive(c, undefined);
+      expect(unlogged.returned, "有無 logPath 不該改變回傳值").toBe(logged.returned);
+      expect(unlogged.slept, "有無 logPath 不該改變睡眠序列").toEqual(logged.slept);
+      const linesAfterUnlogged = readFileSync(logPath, "utf-8")
+        .split("\n").filter((l) => l.trim()).length;
+      expect(readFileSync(logPath).equals(bytesAfterLogged), "無 logPath 的那次不得動到檔案").toBe(true);
+
+      expectSubset({
+        returned: unlogged.returned,
+        slept: unlogged.slept,
+        lines_after_logged_run: linesAfterLogged,
+        lines_after_unlogged_run: linesAfterUnlogged,
+        files_in_dir_after: readdirSync(dir).sort(),
+      }, want!, c.name);
     });
   }
 });

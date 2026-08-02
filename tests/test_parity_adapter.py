@@ -52,7 +52,29 @@ def test_run_watcher_parity(case, tmp_path):
 
 @pytest.mark.parametrize("case", parity_cases("adapter", "noLogPath", SECTIONS))
 def test_run_watcher_without_log_parity(case, tmp_path):
+    """這一段本來只做「開一個 tmp_path、**不**把它交給 run_watcher、然後斷言
+    它是空的」——那對任何實作都成立,包括一個把 log 寫死到別處的實作,也包括
+    一個 _append_log 什麼都不做的實作。改成先跑一次「有 log_path」的,釘住檔案
+    確實出現在**指定的那個路徑**且行數等於嘗試次數,再跑一次「無 log_path」的,
+    釘住同一個檔案 byte 不變、目錄裡也沒多出別的檔案。"""
     expect, _ = resolve_expectation(case, "py")
+    log_path = tmp_path / "w.jsonl"
+
+    logged_returned, logged_slept, logged_entries = _drive(case, str(log_path))
+    bytes_after_logged = log_path.read_bytes()
+
     returned, slept, _ = _drive(case, None)
-    assert_subset({"returned": returned, "slept": slept}, expect, case["name"])
-    assert not list(tmp_path.iterdir()), "log_path 為空時不該寫任何檔案"
+    assert returned == logged_returned, "有無 log_path 不該改變回傳值"
+    assert slept == logged_slept, "有無 log_path 不該改變睡眠序列"
+    lines_after_unlogged = len(
+        [ln for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    )
+    assert log_path.read_bytes() == bytes_after_logged, "無 log_path 的那次不得動到檔案"
+
+    assert_subset({
+        "returned": returned,
+        "slept": slept,
+        "lines_after_logged_run": len(logged_entries),
+        "lines_after_unlogged_run": lines_after_unlogged,
+        "files_in_dir_after": sorted(p.name for p in tmp_path.iterdir()),
+    }, expect, case["name"])

@@ -74,10 +74,28 @@
 
   "noLogPath": [
     {
-      "name": "omitting the log path writes nothing and does not raise",
+      "name": "a logged run writes one line per attempt at exactly the path given; the same run without a path leaves that file byte-identical",
+      "exec_command": ["x"], "heartbeat": 60,
+      "outcomes": [[1, "a"], [0, "b"]],
+      "expect": {
+        "returned": 0,
+        "slept": [60],
+        "lines_after_logged_run": 2,
+        "lines_after_unlogged_run": 2,
+        "files_in_dir_after": ["w.jsonl"]
+      }
+    },
+    {
+      "name": "a single-attempt run writes exactly one line, and the unlogged repeat adds none",
       "exec_command": ["x"], "heartbeat": 60,
       "outcomes": [[0, "done"]],
-      "expect": { "returned": 0, "slept": [] }
+      "expect": {
+        "returned": 0,
+        "slept": [],
+        "lines_after_logged_run": 1,
+        "lines_after_unlogged_run": 1,
+        "files_in_dir_after": ["w.jsonl"]
+      }
     }
   ]
 }
