@@ -108,6 +108,20 @@ describe("runGate", () => {
     expect(runGate([["sh", "-c", "sleep 2"]], { timeout: -5 }).output).toBe("timeout after -5s");
   });
 
+  it("real subprocess: a non-positive timeout still surfaces a missing executable, not a fake timeout", () => {
+    // Python 的 subprocess.run(timeout=0) 是先 fork/exec 再殺,所以執行檔不存在
+    // 時仍然是 FileNotFoundError,不是逾時。實測:
+    //   run_gate([["definitely-not-a-cmd-xyz"]], timeout=0)
+    //     -> FileNotFoundError [Errno 2] No such file or directory
+    // 「timeout <= 0 就直接短路、不 spawn」的寫法會把它變成
+    // passed=False / output='timeout after 0s',把「工具沒裝」誤報成「gate 逾時」
+    // ——loop 會被推去 fix,而不是報告環境問題。
+    for (const timeout of [0, -1]) {
+      expect(() => runGate([["definitely-not-a-cmd-xyz"]], { timeout }), `timeout=${timeout}`)
+        .toThrowError(/ENOENT/);
+    }
+  });
+
   it("timeout 0 still short-circuits: the second command never runs", () => {
     let calls = 0;
     const commands = [["sh", "-c", "true"], ["sh", "-c", "true"]];
