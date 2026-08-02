@@ -319,7 +319,7 @@ function requiredFlag(values, name) {
 function rawFlag(values, name) {
   return values.get(name);
 }
-function main(argv, deps = {}) {
+async function main(argv, deps = {}) {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === void 0 || !TS_COMMANDS.includes(cmd)) {
@@ -387,7 +387,14 @@ function samePath(a, b) {
 }
 var invokedPath = process.argv[1];
 if (invokedPath !== void 0 && samePath(invokedPath, fileURLToPath(import.meta.url))) {
-  process.exit(main(process.argv.slice(2)));
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err) => {
+      process.stderr.write(`${String(err.stack ?? err)}
+`);
+      process.exit(1);
+    }
+  );
 }
 export {
   TS_COMMANDS,

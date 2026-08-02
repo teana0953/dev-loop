@@ -180,7 +180,7 @@ function rawFlag(values: Map<string, string>, name: string): string | undefined 
   return values.get(name);
 }
 
-export function main(argv: string[], deps: Partial<CliDeps> = {}): number {
+export async function main(argv: string[], deps: Partial<CliDeps> = {}): Promise<number> {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === undefined || !(TS_COMMANDS as readonly string[]).includes(cmd)) {
@@ -271,5 +271,13 @@ function samePath(a: string, b: string): boolean {
 
 const invokedPath = process.argv[1];
 if (invokedPath !== undefined && samePath(invokedPath, fileURLToPath(import.meta.url))) {
-  process.exit(main(process.argv.slice(2)));
+  // main 現在回 Promise:直接 process.exit(main(...)) 會拿 Promise 當 exit code
+  // (被轉成 NaN → exit 0),於是所有非 0 的退出碼靜默消失。
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err) => {
+      process.stderr.write(`${String((err as Error).stack ?? err)}\n`);
+      process.exit(1);
+    },
+  );
 }
