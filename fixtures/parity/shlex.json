@@ -14,6 +14,30 @@
       "expect": { "value": [] } },
     { "name": "tabs separate tokens too", "input": "cmd\ttab\tsep",
       "expect": { "value": ["cmd", "tab", "sep"] } },
+    { "name": "carriage return and newline are the other two delimiters",
+      "input": "a\rb\nc",
+      "expect": { "value": ["a", "b", "c"] } },
+    { "name": "an ideographic space is NOT a delimiter",
+      "input": "a　b",
+      "expect": { "value": ["a　b"] } },
+    { "name": "a non-breaking space is NOT a delimiter",
+      "input": "a b",
+      "expect": { "value": ["a b"] } },
+    { "name": "a vertical tab is NOT a delimiter",
+      "input": "a\u000bb",
+      "expect": { "value": ["a\u000bb"] } },
+    { "name": "a form feed is NOT a delimiter",
+      "input": "a\u000cb",
+      "expect": { "value": ["a\u000cb"] } },
+    { "name": "a thin space is NOT a delimiter",
+      "input": "a b",
+      "expect": { "value": ["a b"] } },
+    { "name": "an ideographic space sticks to its token while a real space splits",
+      "input": "x　 y",
+      "expect": { "value": ["x　", "y"] } },
+    { "name": "an ideographic space alone is a whole token, not blank",
+      "input": "　",
+      "expect": { "value": ["　"] } },
     { "name": "double quotes preserve inner spaces", "input": "a \"b c\" d",
       "expect": { "value": ["a", "b c", "d"] } },
     { "name": "single quotes preserve runs of spaces", "input": "a 'b  c' d",
@@ -52,7 +76,13 @@
     { "name": "a double quote only needs the surrounding single quotes",
       "input": "a\"b", "expect": { "value": "'a\"b'" } },
     { "name": "non-ascii is NOT safe and gets quoted",
-      "input": "中文", "expect": { "value": "'中文'" } }
+      "input": "中文", "expect": { "value": "'中文'" } },
+    { "name": "an ideographic space is not safe either",
+      "input": "a　b", "expect": { "value": "'a　b'" } },
+    { "name": "a vertical tab is not safe either",
+      "input": "a\u000bb", "expect": { "value": "'a\u000bb'" } },
+    { "name": "a non-breaking space is not safe either",
+      "input": "a b", "expect": { "value": "'a b'" } }
   ],
 
   "join": [
@@ -82,6 +112,8 @@
     { "name": "runs of spaces inside quotes survive", "input": "a 'b  c' d" },
     { "name": "an apostrophe survives", "input": "echo \"it's\"" },
     { "name": "non-ascii survives", "input": "echo 中文 參數" },
-    { "name": "an escaped space survives", "input": "echo a\\ b" }
+    { "name": "an escaped space survives", "input": "echo a\\ b" },
+    { "name": "an ideographic space inside a token survives", "input": "echo a　b" },
+    { "name": "a vertical tab inside a token survives", "input": "echo a\u000bb" }
   ]
 }

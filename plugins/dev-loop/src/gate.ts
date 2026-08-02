@@ -17,9 +17,26 @@ export interface RunOutcome {
 export type CommandRunner = (cmd: string[], cwd: string | undefined, timeout: number) => RunOutcome;
 
 export const defaultRunner: CommandRunner = (cmd, cwd, timeout) => {
+  // timeout <= 0:Python 的 subprocess.run(timeout=0) 立刻 TimeoutExpired,負數
+  // 亦然;Node 的 spawnSync 把 0 當「不設限」、負數直接 RangeError。`--timeout`
+  // 是 argparse type=int 沒有下界,0 與負數都是合法輸入,所以這裡必須在碰到
+  // spawnSync 之前就短路。
+  //   實測 Python(devloop.gate.run_gate([["python3","-c","time.sleep(2)"]], timeout=t)):
+  //     t=0  -> passed=False, output='timeout after 0s',  0.00s
+  //     t=-1 -> passed=False, output='timeout after -1s', 0.00s
+  //   實測 TS(修前):t=0 -> passed=True 且命令跑滿 2.01s;t=-1 -> RangeError。
+  if (timeout <= 0) {
+    return { code: null, stdout: "", stderr: "", timedOut: true };
+  }
   const [head, ...rest] = cmd;
   const proc = spawnSync(head as string, rest, {
     cwd, encoding: "utf8", timeout: timeout * 1000,
+    // Python 的 subprocess.run 對輸出量沒有上限;Node 預設 1 MiB,超過就把
+    // 整個 spawnSync 變成 error.code === "ENOBUFS"。實測寫 2 MiB 並 exit 1:
+    //   PY run_gate -> passed=False, len(output)=2097152
+    //   TS runGate  -> throw "spawnSync ... ENOBUFS"(邊界:1048576 過、1048577 炸)
+    // `pytest -v` / `npm test` 本身就常常超過 1 MiB,這是常態不是邊角。
+    maxBuffer: Infinity,
   });
   // spawnSync 逾時會殺掉行程並把 error.code 設成 ETIMEDOUT;Python 那邊是
   // TimeoutExpired 例外。兩邊都必須表現成「該命令失敗」而非整個 gate 崩潰。

@@ -16,6 +16,23 @@
  */
 const SAFE = /^[a-zA-Z0-9_@%+=:,./-]+$/;
 
+/**
+ * Python `shlex.whitespace` **恰好**是這四個字元(實測 `shlex.shlex().whitespace`
+ * == `' \t\r\n'`)。JS 的 `/\s/` 大得多——還含 \v、\f、NBSP(U+00A0)、
+ * ideographic space(U+3000)、U+2009 等等。實測:
+ *   "a　b"(U+3000)  PY -> ['a　b']  TS(修前) -> ["a","b"]
+ *   "a b"(U+00A0)   PY -> ['a\xa0b']    TS(修前) -> ["a","b"]
+ *   "a\vb" / "a\fb" / "a b" 同型。
+ * 觸發情境很現實:resume_exec 或 gate_cmds 用 CJK 輸入法打出來、或從網頁貼上。
+ *
+ * shlexQuote 的 SAFE 不受影響:Python 的 shlex.quote 安全集是
+ * `%+,-./0123456789:=@A-Z_a-z` 且要求 `s.isascii()`,與上面的 ASCII-only 字元類
+ * 完全相同(已對 U+3000/U+00A0/\v/\f/中/~/!/$ 逐一比對,兩邊一致都會加引號)。
+ * 另外 JS 的 `$` 只匹配字串真正結尾(不像 Python re 的 `$` 會匹配尾端換行前),
+ * 所以 "abc\n" 兩邊都判定為不安全。
+ */
+const WHITESPACE = " \t\r\n";
+
 export function shlexQuote(s: string): string {
   if (s === "") {
     return "''";
@@ -45,7 +62,7 @@ export function shlexSplit(s: string): string[] {
   let i = 0;
   while (i < s.length) {
     const c = s[i]!;
-    if (/\s/.test(c)) {
+    if (WHITESPACE.includes(c)) {
       if (started) {
         out.push(cur);
         cur = "";

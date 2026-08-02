@@ -86,6 +86,19 @@ describe("sweepChangeMeta", () => {
     const d = devloopDir();
     expect(sweepChangeMeta(join(d, "checkpoint.json"), "nope")).toBe(false);
   });
+  it("a change id containing a slash lands on the basename, as Python's meta.name does", () => {
+    // Python 用 `meta.name`(basename),不是重新拼 `<change_id>.json`。
+    // `--change-id` 是 required=True 且完全沒有驗證,含 "/" 的值是合法輸入。
+    // 實測 change_id "a/b"(檔案在 changes/a/b.json):
+    //   PY -> True,搬到 archive/a/b/b.json
+    //   TS(修前) -> False,目的地拼成 archive/a/b/a/b.json,檔案原地不動
+    const d = devloopDir();
+    mkdirSync(join(d, "changes", "a"), { recursive: true });
+    writeFileSync(join(d, "changes", "a", "b.json"), "{}", "utf-8");
+    expect(sweepChangeMeta(join(d, "checkpoint.json"), "a/b")).toBe(true);
+    expect(existsSync(join(d, "archive", "a", "b", "b.json"))).toBe(true);
+    expect(existsSync(join(d, "changes", "a", "b.json"))).toBe(false);
+  });
   it("propagates when the destination path is a directory instead of reporting nothing to sweep", () => {
     // Python: Path(meta).replace(dest) raises IsADirectoryError when dest is a
     // directory; only FileNotFoundError is caught, so this is not swallowed

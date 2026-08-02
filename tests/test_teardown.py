@@ -107,6 +107,18 @@ def test_sweep_change_meta_returns_false_when_no_meta(tmp_path):
     assert sweep_change_meta(cp, "nope") is False
 
 
+def test_sweep_change_meta_with_a_slash_in_the_change_id(tmp_path):
+    # 目的檔名取的是 meta.name(basename),不是重新拼 "<change_id>.json"。
+    # --change-id 是 required=True 且完全沒有驗證,含 "/" 的值是合法輸入。
+    # 對稱 TS 側「a change id containing a slash lands on the basename」。
+    cp = tmp_path / "checkpoint.json"; cp.write_text("{}")
+    meta = tmp_path / "changes" / "a" / "b.json"
+    meta.parent.mkdir(parents=True); meta.write_text("{}")
+    assert sweep_change_meta(cp, "a/b") is True
+    assert (tmp_path / "archive" / "a" / "b" / "b.json").exists()
+    assert not meta.exists()
+
+
 def test_sweep_change_meta_raises_when_destination_is_a_directory(tmp_path):
     # Path.replace(dest) raises IsADirectoryError when dest is a directory;
     # only FileNotFoundError is caught (the TOCTOU case). A directory sitting

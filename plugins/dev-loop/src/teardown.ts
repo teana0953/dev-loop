@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { pyResolve } from "./pypath.js";
 import { defaultGitRunner, listWorktreePaths, type GitRunner } from "./worktree.js";
 
@@ -97,7 +97,12 @@ export function sweepChangeMeta(checkpointPath: string, changeId: string): boole
   const dest = join(root, "archive", String(changeId));
   mkdirSync(dest, { recursive: true });
   try {
-    renameSync(meta, join(dest, `${changeId}.json`));
+    // Python 用的是 `meta.name`(basename),不是重新拼 `<change_id>.json`。
+    // `--change-id` 是 required=True 且完全沒有驗證,含 "/" 的值是合法輸入。
+    // 實測 change_id "a/b"(檔案在 changes/a/b.json):
+    //   PY -> True,搬到 archive/a/b/b.json
+    //   TS(修前) -> 目的地拼成 archive/a/b/a/b.json,路徑不存在 → 例外/不搬
+    renameSync(meta, join(dest, basename(meta)));
   } catch (e) {
     // Python 只捕 FileNotFoundError(TOCTOU:剛剛還在,現在沒了)。目的地已是
     // 目錄(IsADirectoryError/EISDIR)或跨裝置(EXDEV)這類真正損毀的狀態要
