@@ -28,6 +28,24 @@ describe("disarmWatcher", () => {
     expect(disarmWatcher(join(d, "checkpoint.json"))).toBe("absent");
     expect(existsSync(pid)).toBe(false);
   });
+  it("does not kill the process a loose parse would have found", async () => {
+    // 上一條的 "12abc" 其實抓不到把 pyParseInt 換回 Number.parseInt 的退化:
+    // 它會解成 pid 12,那是 kernel 行程,kill 回 EPERM,結果照樣是 "absent"
+    // ——測試綠著、行為卻已經在對無關的行程送訊號了。這條把「無關的行程」
+    // 換成一個我們看得見死活的自家子行程,退化就藏不住了。
+    const d = devloopDir();
+    const child = spawn("sleep", ["30"]);
+    await new Promise<void>((ok, bad) => {
+      child.once("spawn", () => ok());
+      child.once("error", bad);
+    });
+    const pid = join(d, "watcher.pid");
+    writeFileSync(pid, `${child.pid}abc`, "utf-8");
+    expect(disarmWatcher(join(d, "checkpoint.json"))).toBe("absent");
+    expect(child.killed, "非法的 pid 檔不得害到任何真實行程").toBe(false);
+    expect(process.kill(child.pid as number, 0)).toBe(true);
+    child.kill("SIGKILL");
+  });
   it("treats a dead pid as absent and still removes the file", () => {
     const d = devloopDir();
     const pid = join(d, "watcher.pid");

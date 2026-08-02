@@ -1,0 +1,190 @@
+/**
+ * watcher 生命週期:spawn / 偵測 / idempotent 確保在位,以及 checkpoint save
+ * 之後的 auto-arm。對應 Python 的 devloop/watcher.py。
+ *
+ * CLI 殼(arm-local / watcher-status / watch)留在 cli.ts;這裡是各子命令共用
+ * 的核心邏輯,一律不印 stdout(auto-arm 失敗只在 stderr 警告),各主命令的
+ * stdout 契約才不會被 watcher 汙染。
+ */
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_HEARTBEAT } from "./adapter.js";
+import { loadCheckpoint, type Checkpoint } from "./checkpoint.js";
+import { loadConfig } from "./config.js";
+import { pyParseInt, pySplitlines } from "./pystr.js";
+import { shlexJoin, shlexSplit } from "./shlex.js";
+
+export type WatcherState = "running" | "dead" | "absent";
+export type ArmStatus = "armed" | "already" | "skipped";
+
+/**
+ * `os.kill(pid, 0)` 探活。ESRCH(無此行程)= 死、EPERM(存在但屬他人)= 活,
+ * 這個分類必須照抄——判錯的表現是「watcher 明明活著卻被判定不在」(於是重複
+ * spawn)或「已死的 pid 被當成活的」(於是永遠不重 spawn),兩者都不報錯。
+ *
+ * 其餘 errno 往外拋:Python 的 except 只涵蓋 OSError,pid 大到無法轉成 C int
+ * 時是 OverflowError,會穿出去(實測 os.kill(2**63, 0) 即是)。POSIX 的
+ * kill(2) 只可能失敗於 EINVAL/EPERM/ESRCH,而 signal 固定是 0,所以 EINVAL
+ * 不可達——拋出去的只會是「pid 本身不是合法的行程識別碼」這一類,與 Python
+ * 同步(Node 實測給的是 TypeError ERR_INVALID_ARG_TYPE)。
+ * teardown.ts 的 disarmWatcher 出於同一個理由用同一個形狀。
+ */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      return false;
+    }
+    if (code === "EPERM") {
+      return true;
+    }
+    throw e;
+  }
+  return true;
+}
+
+export function watcherPidPath(checkpointPath: string): string {
+  return join(dirname(checkpointPath), "watcher.pid");
+}
+
+export function watcherLogPath(checkpointPath: string): string {
+  return join(dirname(checkpointPath), "watcher-log.jsonl");
+}
+
+/**
+ * 讀 watcher.pid 判斷狀態:"running"(活著)/ "dead"(pid 檔在但行程死)/
+ * "absent"(無 pid 檔或內容非法)。
+ */
+export function watcherState(checkpointPath: string): [WatcherState, number | null] {
+  const pidPath = watcherPidPath(checkpointPath);
+  if (!existsSync(pidPath)) {
+    return ["absent", null];
+  }
+  const pid = pyParseInt(readFileSync(pidPath, "utf-8"));
+  if (pid === null) {
+    return ["absent", null];
+  }
+  return pidAlive(pid) ? ["running", pid] : ["dead", pid];
+}
+
+/**
+ * spawn 一個 detached 行程跑 `watch` 子命令,回傳其 PID。
+ *
+ * Python spawn 的是 `sys.executable -m devloop.cli watch`;這裡 spawn 的是
+ * `node <plugin 根>/dist/cli.js watch`。**必須是 bundle 而不是 src**:被 spawn
+ * 的是一個沒人看、可能活好幾小時的背景行程,它要能在沒有 node_modules 的
+ * 安裝環境裡跑起來。連帶的代價是 bundle 舊掉的後果變大——既有防護(bundle
+ * 進版控、CI stale guard、pretest 重打包)仍然適用。
+ *
+ * Python 那邊要設 PYTHONPATH 才 import 得到 devloop;bundle 是自足的,不需要
+ * 對應的 env 處理(dist/cli.js 自己在委派回 Python 時會設)。
+ */
+export function spawnWatcher(
+  execCommand: string[],
+  heartbeat: number,
+  logPath?: string,
+): number {
+  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const cli = join(pluginRoot, "dist", "cli.js");
+  const argv = [
+    cli, "watch",
+    "--exec", shlexJoin(execCommand),
+    "--heartbeat", String(heartbeat),
+  ];
+  if (logPath) {
+    argv.push("--log", logPath);
+  }
+  const proc = spawn(process.execPath, argv, { detached: true, stdio: "ignore" });
+  proc.unref();
+  if (proc.pid === undefined) {
+    // Python 的 Popen 失敗會拋 OSError;這裡 spawn 的錯誤是非同步事件,
+    // 但 pid 為 undefined 是同步可見的失敗訊號,不能靜默當成 armed。
+    throw new Error("failed to spawn watcher: no pid");
+  }
+  return proc.pid;
+}
+
+/**
+ * idempotent 確保 watcher 在位,不印字。
+ *
+ * status:"armed"(剛 spawn,info=pid)/ "already"(既存活,info=pid)/
+ * "skipped"(無 resume 命令,info=null)。
+ */
+export function ensureArmed(
+  checkpointPath: string,
+  opts: { heartbeat?: number; execOverride?: string | null } = {},
+): [ArmStatus, number | null] {
+  const heartbeat = opts.heartbeat ?? DEFAULT_HEARTBEAT;
+  const cp = loadCheckpoint(checkpointPath);
+  // Python: exec_str = exec_override or cp.resume_exec —— `or` 不是 `??`,
+  // 空字串的 override 要讓位給 checkpoint 裡的值。
+  const execStr = opts.execOverride || cp.resume_exec;
+  if (!execStr) {
+    return ["skipped", null];
+  }
+  const [state, pid] = watcherState(checkpointPath);
+  if (state === "running") {
+    return ["already", pid];
+  }
+  const newPid = spawnWatcher(
+    shlexSplit(execStr), heartbeat, watcherLogPath(checkpointPath));
+  const pidPath = watcherPidPath(checkpointPath);
+  mkdirSync(dirname(pidPath), { recursive: true });
+  writeFileSync(pidPath, String(newPid), "utf-8");
+  return ["armed", newPid];
+}
+
+/**
+ * 讀 watcher log 最後一筆;無檔 / 空檔 / 壞行回 null——排障工具自身不該炸。
+ *
+ * 回傳型別刻意是 unknown:一行合法 JSON 也可能是數字或字串(Python 的
+ * json.loads 同樣照收),消費端要自己面對「它不是 dict」這件事,不能假設。
+ */
+export function lastWatcherAttempt(checkpointPath: string): unknown {
+  const log = watcherLogPath(checkpointPath);
+  if (!existsSync(log)) {
+    return null;
+  }
+  let last: unknown = null;
+  for (const raw of pySplitlines(readFileSync(log, "utf-8"))) {
+    const line = raw.trim();
+    if (!line) {
+      continue;
+    }
+    try {
+      last = JSON.parse(line);
+    } catch {
+      // 壞行跳過,保留上一筆好的——Python 的 `except ValueError: continue`。
+      continue;
+    }
+  }
+  return last;
+}
+
+/**
+ * checkpoint save 之後自動確保 watcher 在位。靜默,失敗只在 stderr 警告——
+ * auto-arm 失敗不該讓已經成功的主命令變成失敗。
+ */
+export function ensureArmedAfterSave(cp: Checkpoint, file: string): void {
+  if (!cp.resume_exec) {
+    return;
+  }
+  if (cp.phase === "done") {
+    return; // 終態不再需要 watcher(teardown 已 disarm,勿重新拉起)
+  }
+  // config.auto_arm 在 loadConfig 裡已經過 pyTruthy 收斂成 boolean,
+  // 這裡再套一次 pyTruthy 是多餘的。
+  const config = loadConfig(join(dirname(file), "config.json"));
+  if (!config.auto_arm) {
+    return;
+  }
+  try {
+    ensureArmed(file);
+  } catch (exc) {
+    process.stderr.write(`warning: auto-arm failed: ${String((exc as Error).message)}\n`);
+  }
+}
