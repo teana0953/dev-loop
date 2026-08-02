@@ -8,6 +8,7 @@ import { loadCheckpoint, saveCheckpoint, type Checkpoint } from "./checkpoint.js
 import { appendHistory } from "./history.js";
 import {
   transition,
+  nextHint,
   InvalidTransition,
   QA_SKIP,
   HUMAN_RESUME_PROPOSE,
@@ -38,17 +39,15 @@ import { shlexSplit } from "./shlex.js";
  * 落到 unknown 分支;少列一個已實作的,呼叫會靜默走 Python,「已移植」變成
  * 假的而且沒有人會發現。cli.test.ts 有一條測試釘住兩者相符。
  *
- * "status" is deliberately NOT here even though a `cmdStatus` used to exist:
- * it was written before this branch made TS the front door and shipped with
- * three documented omissions (--json, config.json gate_cmds sourcing, the
- * watcher-missing warning) that were harmless while nothing invoked it.
- * Once bin/devloop started execing dist/cli.js, those omissions became live,
- * silent regressions. Status stays on Python until the `watcher` module is
- * ported (next milestone) and a full port can be done properly.
+ * "status" 回來了(task 6):它從 M1 就在這裡,但當時沒有東西呼叫得到它。
+ * M2b-1 把 bin/devloop 交給 TS 的那一瞬間,三個缺口同時上線:gate_cmds
+ * 沒從 config.json 讀(next hint 與 Python 不同)、--json 被靜默忽略、
+ * watcher 未執行的警告消失。它因此被拿掉,直到 watcher 模組移植完成
+ * (M2b-2)才能把三個缺口一次補齊、重新放回這份清單。
  */
 export const TS_COMMANDS = [
   "archive", "units-status", "model", "event", "gate",
-  "watch", "arm-local", "watcher-status",
+  "watch", "arm-local", "watcher-status", "status",
 ] as const;
 
 export interface CliDeps {
@@ -434,6 +433,107 @@ function cmdWatcherStatus(file: string): number {
 }
 
 /**
+ * Python 的 `json.dumps(value, ensure_ascii=False)`(indent 未給,預設分隔符
+ * `", "`/`": "`)。`JSON.stringify` 給的是無空白的 `","`/`":"`——實測
+ * `status --file <cp> --json` PY 印 `{"phase": "gate", ...}`,
+ * `JSON.stringify` 印 `{"phase":"gate",...}`,矩陣逐位元組比對會紅。
+ * ensure_ascii=False 不需要特別處理:JS 的字串跳脫本來就不轉義非 ASCII。
+ */
+function pyJsonDumps(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(pyJsonDumps).join(", ")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}: ${pyJsonDumps(v)}`).join(", ")}}`;
+}
+
+/**
+ * 非終態且有續跑命令時,watcher 該在而不在 → stderr 警告。
+ * **stdout 契約不變**:警告絕不能跑到 stdout,否則所有解析 status 輸出的
+ * 呼叫端都會多讀到一行(實測 Python 同樣寫 stderr)。
+ */
+function warnIfWatcherMissing(cp: Checkpoint, file: string): void {
+  if (cp.phase === "done" || !pyTruthy(cp.resume_exec)) {
+    return;
+  }
+  const [state] = watcherState(file);
+  if (state !== "running") {
+    process.stderr.write(
+      `warning: watcher not running; re-arm: devloop arm-local --file ${file}\n`);
+  }
+}
+
+/**
+ * status 命令:M1 版留下的三個缺口(見 TS_COMMANDS 上方註解)在這裡一次補齊。
+ *
+ *  - gate_cmds 從 `<file 所在目錄>/config.json` 讀,傳進 nextHint——沒讀到的
+ *    話 gate 階段的 hint 會是 `<test-cmd>` 骨架而不是可直接執行的命令
+ *    (實測見 task-6-report.md)。
+ *  - `--json`:Python 是 `payload = asdict(cp); payload["next"] = hint`,鍵的
+ *    順序照 dataclass 欄位順序、`next` 加在最後。這裡照樣手動列出欄位順序
+ *    (與 Checkpoint interface 宣告順序一致),不能用 `{...cp, next: hint}`——
+ *    `cp` 來自 `makeCheckpoint({...DEFAULTS, ...partial})`,spread 的插入
+ *    順序是「DEFAULTS 的欄位在前、partial 自帶的新鍵(phase/change_id/branch)
+ *    在後」,跟宣告順序不同(實測驗證見 report)。
+ *  - watcher 未執行的警告:見 warnIfWatcherMissing。
+ */
+function cmdStatus(file: string, json: boolean): number {
+  const cp = loadCheckpoint(file);
+  const config = loadConfig(join(dirname(file), "config.json"));
+  const hint = nextHint(cp.phase, file, {
+    units: cp.units as Array<{ id: string; status?: string }>,
+    reviewLegs: cp.review_legs as Array<{ kind: string; status?: string }>,
+    gateCmds: config.gate_cmds,
+    finishMode: cp.finish_mode,
+    flowProfile: cp.flow_profile,
+    needsUiux: cp.needs_uiux,
+  });
+  warnIfWatcherMissing(cp, file);
+  if (json) {
+    const payload = {
+      phase: cp.phase,
+      change_id: cp.change_id,
+      branch: cp.branch,
+      iteration: cp.iteration,
+      last_artifact: cp.last_artifact,
+      non_blocking: cp.non_blocking,
+      updated_at: cp.updated_at,
+      resume_exec: cp.resume_exec,
+      units: cp.units,
+      review_legs: cp.review_legs,
+      propose_attempts: cp.propose_attempts,
+      gate_failures: cp.gate_failures,
+      finish_mode: cp.finish_mode,
+      flow_profile: cp.flow_profile,
+      needs_uiux: cp.needs_uiux,
+      next: hint,
+    };
+    process.stdout.write(`${pyJsonDumps(payload)}\n`);
+    return 0;
+  }
+  process.stdout.write(
+    `phase=${cp.phase} iteration=${String(cp.iteration)} `
+    + `change_id=${cp.change_id} branch=${cp.branch}\n`);
+  process.stdout.write(`${hint}\n`);
+  if (cp.updated_at) {
+    process.stdout.write(`updated_at=${cp.updated_at}\n`);
+  }
+  return 0;
+}
+
+/**
  * Python 對「一個 str」的 repr。gate 失敗時 Python 印的是
  * `print("gate FAILED: %s" % result.failed_command)`,對 list 走的是 repr,
  * 而 list 的 repr 又對每個元素走 str 的 repr —— 不是 JSON。
@@ -556,10 +656,23 @@ function resolveFlagName(
  * 或 "required" 分支,TS 走殘餘 token 分支),沒有可觀察差異。所以 `--` 一律
  * 丟進 unknown,不參與縮寫比對(否則 "--" 是所有長選項的前綴,會被誤判成
  * ambiguous)。
+ *
+ * `boolFlags`:argparse 的 `action="store_true"`(status 的 `--json`)。這種
+ * 旗標不吃下一個 token 當值——`--json` 後面接的東西是別的殘餘 token,不是
+ * `--json` 的值。實測:
+ *   `status --file f --json`       -> --json 落地 "true",無殘餘
+ *   `status --file f --json extra` -> "extra" 進 unrecognized arguments
+ *   `status --file f --json=true`  -> exit 2 "argument --json: ignored
+ *                                      explicit argument 'true'"
+ * 用 `="true"` 而非空字串 record,是為了跟 rawFlag 的「有無此鍵」語意
+ * 保持一致:`values.has("--json")` 才是「有沒有給這個旗標」的真正判準,
+ * 但呼叫端目前只需要「給了」這件事,record 一個非空字面值最省事也最不會
+ * 被誤判成「傳了空字串」。
  */
 function parseArgs(
   rest: string[],
   known: readonly string[],
+  boolFlags: readonly string[] = [],
 ): {
   values: Map<string, string>;
   repeated: Map<string, string[]>;
@@ -606,6 +719,21 @@ function parseArgs(
         unknown,
         error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`,
       };
+    }
+    if (boolFlags.includes(match.resolved)) {
+      if (eq !== -1) {
+        // 實測:`--json=true` -> exit 2 "ignored explicit argument 'true'"。
+        // store_true 旗標不接受任何顯式值,不論那個值是什麼。
+        return {
+          values,
+          repeated,
+          unknown,
+          error: `argument ${match.resolved}: ignored explicit argument `
+            + `'${tok.slice(eq + 1)}'`,
+        };
+      }
+      record(match.resolved, "true");
+      continue;
     }
     if (eq !== -1) {
       // `--flag=` 的值是空字串,不是「沒給值」——實測 argparse 存下 ""
@@ -869,6 +997,23 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
       return 2;
     }
     return cmdWatcherStatus(file);
+  }
+  if (cmd === "status") {
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--json"], ["--json"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === undefined) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    return cmdStatus(file, rawFlag(values, "--json") !== undefined);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);

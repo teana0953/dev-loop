@@ -134,6 +134,58 @@ var HUMAN_RESUME_FIX = "human_resume_fix";
 var DEFAULT_MAX_ITERATIONS = 3;
 var InvalidTransition = class extends Error {
 };
+var DETERMINISTIC_HINTS = {
+  proposal_review: (f) => `next: devloop proposal-review --file ${f} --report <pr.json>`,
+  gate: (f) => `next: devloop gate --file ${f} --cmd "<test-cmd>" [--cmd "<lint-cmd>"]`,
+  qa: (f) => `next: devloop qa --file ${f} --report <qa.json>`,
+  review: (f) => `next: devloop review --file ${f} --from-legs`,
+  merge: (f) => `next: devloop finish --file ${f} --config <config.json> --meta <meta.json> --followup <followup.md>`
+};
+var JUDGMENT_HINTS = {
+  brainstorm: "next: dispatch brainstorming(\u7522\u51FA\u8A2D\u8A08\u6587\u4EF6,\u6279\u51C6\u5F8C propose)",
+  propose: "next: dispatch propose(\u5EFA\u7ACB OpenSpec change,\u5B8C\u6210\u5F8C event --event propose_done)",
+  apply: "next: dispatch apply(TDD \u5BE6\u4F5C tasks,\u5B8C\u6210\u5F8C event --event apply_done)",
+  fix: "next: dispatch fix(\u8655\u7406 blocking \u9805,\u5B8C\u6210\u5F8C event --event fix_done)"
+};
+var TERMINAL_HINTS = {
+  done: "next: (done)",
+  escalated: "next: (escalated)\u4EBA\u5DE5\u5347\u7D1A\u5F8C\u7E8C\u8DD1:event --event human_resume_propose \u6216 human_resume_fix"
+};
+function nextHint(phase, checkpointPath, opts = {}) {
+  const { units, reviewLegs, gateCmds, finishMode, flowProfile, needsUiux } = opts;
+  if (phase === "qa" && flowProfile === "light" && !needsUiux) {
+    return `next: devloop event --file ${checkpointPath} --event qa_skip`;
+  }
+  if (phase === "gate" && gateCmds && gateCmds.length) {
+    return `next: devloop gate --file ${checkpointPath}`;
+  }
+  if (phase === "teardown") {
+    const mode = finishMode || "<merge|pr>";
+    return `next: devloop teardown --file ${checkpointPath} --repo . --mode ${mode}`;
+  }
+  if ((phase === "apply" || phase === "fix") && units) {
+    const pending = units.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => u.id);
+    if (pending.length) {
+      return `next: units pending: ${pending.join(",")} -> devloop units-status --file ${checkpointPath}`;
+    }
+  }
+  if (phase === "review" && reviewLegs) {
+    const pendingLegs = reviewLegs.filter((l) => l.status !== "collected").map((l) => l.kind);
+    if (pendingLegs.length) {
+      return `next: legs pending: ${pendingLegs.join(",")} -> devloop leg-done --file ${checkpointPath} --kind <kind> --report <report.json>`;
+    }
+  }
+  if (Object.hasOwn(TERMINAL_HINTS, phase)) {
+    return TERMINAL_HINTS[phase];
+  }
+  if (Object.hasOwn(DETERMINISTIC_HINTS, phase)) {
+    return DETERMINISTIC_HINTS[phase](checkpointPath);
+  }
+  if (Object.hasOwn(JUDGMENT_HINTS, phase)) {
+    return JUDGMENT_HINTS[phase];
+  }
+  throw new Error(`no next hint for phase ${phase} (KeyError)`);
+}
 function transition(phase, iteration, event, maxIterations = DEFAULT_MAX_ITERATIONS) {
   if (phase === "proposal_review" && event === PROPOSE_CLEAN) {
     return ["apply", iteration];
@@ -721,7 +773,8 @@ var TS_COMMANDS = [
   "gate",
   "watch",
   "arm-local",
-  "watcher-status"
+  "watcher-status",
+  "status"
 ];
 function delegateToPython(argv) {
   const root = dirname6(dirname6(fileURLToPath2(import.meta.url)));
@@ -963,6 +1016,84 @@ function cmdWatcherStatus(file) {
   }
   return 0;
 }
+function pyJsonDumps(value) {
+  if (value === null || value === void 0) {
+    return "null";
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(pyJsonDumps).join(", ")}]`;
+  }
+  const entries = Object.entries(value);
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}: ${pyJsonDumps(v)}`).join(", ")}}`;
+}
+function warnIfWatcherMissing(cp, file) {
+  if (cp.phase === "done" || !pyTruthy(cp.resume_exec)) {
+    return;
+  }
+  const [state] = watcherState(file);
+  if (state !== "running") {
+    process.stderr.write(
+      `warning: watcher not running; re-arm: devloop arm-local --file ${file}
+`
+    );
+  }
+}
+function cmdStatus(file, json) {
+  const cp = loadCheckpoint(file);
+  const config = loadConfig(join4(dirname6(file), "config.json"));
+  const hint = nextHint(cp.phase, file, {
+    units: cp.units,
+    reviewLegs: cp.review_legs,
+    gateCmds: config.gate_cmds,
+    finishMode: cp.finish_mode,
+    flowProfile: cp.flow_profile,
+    needsUiux: cp.needs_uiux
+  });
+  warnIfWatcherMissing(cp, file);
+  if (json) {
+    const payload = {
+      phase: cp.phase,
+      change_id: cp.change_id,
+      branch: cp.branch,
+      iteration: cp.iteration,
+      last_artifact: cp.last_artifact,
+      non_blocking: cp.non_blocking,
+      updated_at: cp.updated_at,
+      resume_exec: cp.resume_exec,
+      units: cp.units,
+      review_legs: cp.review_legs,
+      propose_attempts: cp.propose_attempts,
+      gate_failures: cp.gate_failures,
+      finish_mode: cp.finish_mode,
+      flow_profile: cp.flow_profile,
+      needs_uiux: cp.needs_uiux,
+      next: hint
+    };
+    process.stdout.write(`${pyJsonDumps(payload)}
+`);
+    return 0;
+  }
+  process.stdout.write(
+    `phase=${cp.phase} iteration=${String(cp.iteration)} change_id=${cp.change_id} branch=${cp.branch}
+`
+  );
+  process.stdout.write(`${hint}
+`);
+  if (cp.updated_at) {
+    process.stdout.write(`updated_at=${cp.updated_at}
+`);
+  }
+  return 0;
+}
 function pyReprStr(s) {
   const hasSingle = s.includes("'");
   const hasDouble = s.includes('"');
@@ -1011,7 +1142,7 @@ function resolveFlagName(name, known) {
   }
   return null;
 }
-function parseArgs(rest, known) {
+function parseArgs(rest, known, boolFlags = []) {
   const values = /* @__PURE__ */ new Map();
   const repeated = /* @__PURE__ */ new Map();
   const record = (name, value) => {
@@ -1044,6 +1175,18 @@ function parseArgs(rest, known) {
         unknown,
         error: `ambiguous option: ${name} could match ${match.ambiguous.join(", ")}`
       };
+    }
+    if (boolFlags.includes(match.resolved)) {
+      if (eq !== -1) {
+        return {
+          values,
+          repeated,
+          unknown,
+          error: `argument ${match.resolved}: ignored explicit argument '${tok.slice(eq + 1)}'`
+        };
+      }
+      record(match.resolved, "true");
+      continue;
     }
     if (eq !== -1) {
       record(match.resolved, tok.slice(eq + 1));
@@ -1269,6 +1412,25 @@ async function dispatch(argv, deps) {
       return 2;
     }
     return cmdWatcherStatus(file);
+  }
+  if (cmd === "status") {
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--json"], ["--json"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === void 0) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    return cmdStatus(file, rawFlag(values, "--json") !== void 0);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);

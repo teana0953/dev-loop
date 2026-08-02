@@ -610,6 +610,50 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       ],
     },
   ],
+  // 矩陣的 checkpoint 一律不放 resume_exec:放了會走 watcher 警告那條路,
+  // stderr 不比對,徒增 watcherState 讀檔的雜訊。警告由 cli.test.ts 的
+  // 單元測試負責。
+  status: [
+    {
+      name: "a gate phase with configured gate_cmds",
+      build: (dir) => {
+        const file = writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" });
+        writeConfig(dir, { gate_cmds: ["pytest -q"] });
+        return ["status", "--file", file];
+      },
+      // updated_at 是 checkpoint 寫入當下的時間;兩個引擎各自寫各自的檔,
+      // 而且時間戳文法本來就不同(既有延後項:PY 微秒 +00:00、TS 毫秒 Z)。
+      normalize: (s) => s.replace(/updated_at=\S+/g, "updated_at=<TS>"),
+    },
+    {
+      name: "the same checkpoint without gate_cmds",
+      build: (dir) => [
+        "status", "--file",
+        writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
+      ],
+      normalize: (s) => s.replace(/updated_at=\S+/g, "updated_at=<TS>"),
+    },
+    {
+      name: "--json",
+      build: (dir) => [
+        "status", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--json",
+      ],
+      normalize: (s) => s.replace(/"updated_at":\s*"[^"]*"/g, '"updated_at":"<TS>"'),
+    },
+    {
+      name: "a light profile in the qa phase takes the qa_skip hint",
+      build: (dir) => [
+        "status", "--file",
+        writeCheckpoint(dir, {
+          phase: "qa", change_id: "c1", branch: "b",
+          flow_profile: "light", needs_uiux: false,
+        }),
+      ],
+      normalize: (s) => s.replace(/updated_at=\S+/g, "updated_at=<TS>"),
+    },
+  ],
 };
 
 /**

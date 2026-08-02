@@ -11,63 +11,121 @@ import { makeCheckpoint, saveCheckpoint, loadCheckpoint } from "./checkpoint.js"
 const CLI = join(process.cwd(), "dist", "cli.js");
 const WRAPPER = join(process.cwd(), "bin", "devloop");
 
-function runStatus(cpPath: string): string {
-  return execFileSync("node", [CLI, "status", "--file", cpPath], { encoding: "utf-8" });
-}
+/**
+ * status(task 6):三個 M1 遺留缺口在這裡收尾——gate_cmds 從 config.json 讀、
+ * `--json` 真的被消費、watcher 未執行的警告會印。所有斷言值都抄自
+ * `python3 -m devloop.cli status ...` 的實測輸出(見 task-6-report.md),
+ * 不是從 TS 實作反推的。
+ */
+describe("status", () => {
+  function fixture(fields: Record<string, unknown> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-status-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "gate", change_id: "c1", branch: "b", ...fields }), file);
+    return file;
+  }
 
-function runStatusViaWrapper(cpPath: string): string {
-  return execFileSync(WRAPPER, ["status", "--file", cpPath], { encoding: "utf-8" });
-}
+  function capture(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const spy = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => spy.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => spy.mockRestore(),
+    };
+  }
 
-// status is not in TS_COMMANDS (see C1) — every case below now exercises
-// delegation to the real Python engine (through bin/devloop's exec), not a
-// TypeScript implementation. That is deliberate: `status` used to be TS-owned
-// with three documented omissions (--json, config.json gate_cmds sourcing,
-// the watcher-missing warning) that were harmless only because nothing
-// invoked the TS path. Making bin/devloop exec dist/cli.js turned them into
-// live regressions, and the ruling was to drop status back to Python rather
-// than rush a partial port. These tests now pin "byte-identical to Python,
-// because it *is* Python" instead of pinning TS's own (incomplete) format.
-describe("cli status (delegated to Python — C1)", () => {
-  it("prints phase summary and next hint", () => {
-    const dir = mkdtempSync(join(tmpdir(), "cli-"));
-    const p = join(dir, "cp.json");
-    writeFileSync(
-      p,
-      JSON.stringify({
-        phase: "gate",
-        change_id: "c",
-        branch: "b",
-        iteration: 1,
-        gate_failures: 0,
-      }),
-      "utf-8",
-    );
-    const out = runStatus(p);
-    const lines = out.trim().split("\n");
-    expect(lines[0]).toContain("gate");
-    expect(lines[1]).toMatch(/^next: /);
+  it("sources gate_cmds from config.json, changing the next hint", async () => {
+    // 這是 M1 版 status 的缺口之一:沒讀 config 時 hint 給的是 <test-cmd>
+    // 骨架而不是可直接執行的命令,與 Python 不同。
+    const dir = mkdtempSync(join(tmpdir(), "cli-status-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(makeCheckpoint({ phase: "gate", change_id: "c1", branch: "b" }), file);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ gate_cmds: ["pytest -q"] }), "utf-8");
+    const out = capture("stdout");
+    expect(await main(["status", "--file", file])).toBe(0);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain(`next: devloop gate --file ${file}`);
+    // 實測(PYTHONPATH=plugins/dev-loop python3 -m devloop.cli status --file
+    // <cp> 有 gate_cmds):"next: devloop gate --file <cp>",無 --cmd 骨架。
+    expect(printed).not.toContain("--cmd");
   });
 
-  it("prints updated_at line when present", () => {
-    const dir = mkdtempSync(join(tmpdir(), "cli-"));
-    const p = join(dir, "cp.json");
-    writeFileSync(
-      p,
-      JSON.stringify({
-        phase: "done",
-        change_id: "c",
-        branch: "b",
-        iteration: 2,
-        updated_at: "2026-07-30T00:00:00.000Z",
-      }),
-      "utf-8",
+  it("falls back to the <test-cmd> skeleton without config.json (regression guard)", async () => {
+    // 同一個 checkpoint,沒有 config.json:實測 PY 印
+    // "next: devloop gate --file <cp> --cmd \"<test-cmd>\" [--cmd \"<lint-cmd>\"]"。
+    const file = fixture();
+    const out = capture("stdout");
+    expect(await main(["status", "--file", file])).toBe(0);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain(`next: devloop gate --file ${file} --cmd "<test-cmd>" [--cmd "<lint-cmd>"]`);
+  });
+
+  it("honours --json, emitting the whole checkpoint plus next", async () => {
+    const file = fixture({ phase: "apply" });
+    const out = capture("stdout");
+    expect(await main(["status", "--file", file, "--json"])).toBe(0);
+    const printed = out.text();
+    out.restore();
+    const payload = JSON.parse(printed) as Record<string, unknown>;
+    expect(payload.phase).toBe("apply");
+    expect(typeof payload.next).toBe("string");
+    // 單行輸出:Python 是 print(json.dumps(...)),不是縮排過的。
+    expect(printed.trim().includes("\n")).toBe(false);
+  });
+
+  it("matches Python's json.dumps key order and separators byte for byte", async () => {
+    // 實測(見 task-6-report.md):PY 的鍵順序是 dataclass 欄位宣告順序 + 尾隨
+    // `next`,分隔符是 ", "/": "(有空白)。`{...cp, next: hint}` 給的順序不同
+    // ——cp 來自 `{...DEFAULTS, ...partial}`,partial 自帶的新鍵(phase/
+    // change_id/branch)被插到 DEFAULTS 欄位之後,不是宣告順序;
+    // `JSON.stringify` 也沒有空白分隔符。兩者都要在這裡釘住。
+    const file = fixture({ phase: "apply" });
+    const out = capture("stdout");
+    await main(["status", "--file", file, "--json"]);
+    const printed = out.text();
+    out.restore();
+    const normalized = printed.replace(/"updated_at": "[^"]*"/, '"updated_at": "<TS>"');
+    expect(normalized).toBe(
+      '{"phase": "apply", "change_id": "c1", "branch": "b", "iteration": 0, '
+      + '"last_artifact": "", "non_blocking": [], "updated_at": "<TS>", '
+      + '"resume_exec": null, "units": [], "review_legs": [], '
+      + '"propose_attempts": 0, "gate_failures": 0, "finish_mode": null, '
+      + '"flow_profile": "full", "needs_uiux": false, '
+      + `"next": "next: dispatch apply(TDD 實作 tasks,完成後 event --event apply_done)"}\n`,
     );
-    const out = runStatus(p);
-    const lines = out.trim().split("\n");
-    expect(lines[0]).toBe("phase=done iteration=2 change_id=c branch=b");
-    expect(lines[1]).toBe("next: (done)");
-    expect(lines[2]).toBe("updated_at=2026-07-30T00:00:00.000Z");
+  });
+
+  it("warns on stderr when a watcher is needed but not running", async () => {
+    const file = fixture({ phase: "apply", resume_exec: "/usr/bin/true" });
+    const err = capture("stderr");
+    expect(await main(["status", "--file", file])).toBe(0);
+    const printed = err.text();
+    err.restore();
+    expect(printed).toContain(`warning: watcher not running; re-arm: devloop arm-local --file ${file}`);
+  });
+
+  it("does not warn in the done phase or without a resume command", async () => {
+    const done = fixture({ phase: "done", resume_exec: "/usr/bin/true" });
+    const err = capture("stderr");
+    await main(["status", "--file", done]);
+    expect(err.text()).toBe("");
+    err.restore();
+
+    const noResume = fixture({ phase: "apply" });
+    const err2 = capture("stderr");
+    await main(["status", "--file", noResume]);
+    expect(err2.text()).toBe("");
+    err2.restore();
+  });
+
+  it("rejects --json=<value>, matching argparse's store_true", async () => {
+    // 實測:`status --file <cp> --json=true` -> exit 2
+    // "argument --json: ignored explicit argument 'true'"。
+    const file = fixture();
+    const rc = await main(["status", "--file", file, "--json=true"]);
+    expect(rc).toBe(2);
   });
 
   it.skipIf(process.platform === "win32")(
@@ -112,64 +170,26 @@ describe("cli status (delegated to Python — C1)", () => {
         }),
         "utf-8",
       );
-      const direct = runStatus(p);
-      const viaWrapper = runStatusViaWrapper(p);
+      const direct = execFileSync("node", [CLI, "status", "--file", p], { encoding: "utf-8" });
+      const viaWrapper = execFileSync(WRAPPER, ["status", "--file", p], { encoding: "utf-8" });
       expect(viaWrapper).toBe(direct);
       const lines = viaWrapper.trim().split("\n");
       expect(lines[0]).toContain("gate");
       expect(lines[1]).toMatch(/^next: /);
     },
   );
-
-  it("routes status through the injected delegate rather than owning it", async () => {
-    const seen: string[][] = [];
-    const rc = await main(["status", "--file", "x"], {
-      delegate: (argv) => { seen.push(argv); return 0; },
-    });
-    expect(rc).toBe(0);
-    expect(seen).toEqual([["status", "--file", "x"]]);
-  });
-
-  it("honors gate_cmds from config.json and prints the watcher-missing warning", () => {
-    // This is the exact regression C1 pinned: the old TS-owned cmdStatus
-    // never read config.json (so the gate hint was always the "<test-cmd>"
-    // skeleton, never the real command) and never checked the watcher
-    // (so the "watcher not running; re-arm:" warning never printed). Both
-    // must show up now that status is Python end to end.
-    const dir = mkdtempSync(join(tmpdir(), "cli-status-"));
-    const p = join(dir, "cp.json");
-    writeFileSync(
-      p,
-      JSON.stringify({
-        phase: "gate",
-        change_id: "c",
-        branch: "b",
-        iteration: 1,
-        gate_failures: 0,
-        resume_exec: "some-resume-command",
-      }),
-      "utf-8",
-    );
-    writeFileSync(join(dir, "config.json"), JSON.stringify({ gate_cmds: ["npm test"] }), "utf-8");
-    const proc = spawnSync(WRAPPER, ["status", "--file", p], { encoding: "utf-8" });
-    expect(proc.status).toBe(0);
-    expect(proc.stdout).toContain(`next: devloop gate --file ${p}`);
-    expect(proc.stdout).not.toContain("--cmd");
-    expect(proc.stderr).toContain("warning: watcher not running; re-arm:");
-  });
 });
 
 describe("command routing", () => {
   it("routes every command it does not own to Python", async () => {
     const seen: string[][] = [];
-    // `status` 還沒移植(見 TS_COMMANDS 的註解:等 watcher 進 TS 才會完整
-    // 移植),所以它是這條「不屬於我就轉給 Python」的樣本。先前用的是
-    // `event`、再來是 `gate`,兩者都已陸續進 TS_COMMANDS。
-    const rc = await main(["status", "--file", "x"], {
+    // `review` 還沒移植,所以它是這條「不屬於我就轉給 Python」的樣本。先前
+    // 用過的是 `event`、`gate`,再來是 `status`,都已陸續進 TS_COMMANDS。
+    const rc = await main(["review", "--file", "x"], {
       delegate: (argv) => { seen.push(argv); return 7; },
     });
     expect(rc).toBe(7);
-    expect(seen).toEqual([["status", "--file", "x"]]);
+    expect(seen).toEqual([["review", "--file", "x"]]);
   });
 
   it("routes an unknown command to Python rather than inventing its own error", async () => {
