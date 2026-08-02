@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { pyResolve } from "./pypath.js";
+import { pyParseInt } from "./pystr.js";
 import { defaultGitRunner, listWorktreePaths, type GitRunner } from "./worktree.js";
 
 /**
@@ -16,12 +17,12 @@ export function disarmWatcher(checkpointPath: string): "killed" | "absent" {
   let result: "killed" | "absent" = "absent";
   let pid: number | null = null;
   try {
-    const raw = readFileSync(pidPath, "utf-8").trim();
-    const n = Number.parseInt(raw, 10);
-    // Python 的 int() 對 "12abc" 會 ValueError,Number.parseInt 卻回 12。
-    // 用完整字串比對把語意對齊:非純十進位整數一律當非法。
-    pid = /^[+-]?\d+$/.test(raw) && Number.isFinite(n) ? n : null;
+    // Python 的 int() 對 "12abc" 會 ValueError,Number.parseInt 卻回 12;
+    // 底線、正負號、該剝與不該剝的空白也各有差別。整套語意收在 pyParseInt,
+    // 與 watcher.ts 的 pid 解析共用同一份實作(從前是兩份各寫各的)。
+    pid = pyParseInt(readFileSync(pidPath, "utf-8"));
   } catch {
+    // Python 的 except 也含 OSError:讀不到檔就當內容非法。
     pid = null;
   }
   if (pid !== null) {

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { pyResolve } from "./pypath.js";
+import { pySplitlines } from "./pystr.js";
 
 export interface MergeResult {
   ok: boolean;
@@ -63,7 +64,7 @@ export function removeWorktree(
  */
 export function parseWorktreePaths(porcelain: string, repoResolved: string): string[] {
   const paths: string[] = [];
-  for (const line of porcelain.split("\n")) {
+  for (const line of pySplitlines(porcelain)) {
     if (line.startsWith("worktree ")) {
       const p = pyResolve(line.slice("worktree ".length));
       if (p !== repoResolved) {

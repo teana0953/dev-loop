@@ -80,6 +80,16 @@ describe("parseWorktreePaths resolves symlinks (the reason pyResolve exists)", (
     const porcelain = `worktree ${join(link, "repo")}\nHEAD abc\n`;
     expect(parseWorktreePaths(porcelain, repoReal)).toEqual([]);
   });
+
+  it("splits porcelain output the way Python's splitlines does", () => {
+    // 實測:worktree 路徑含 \r 時 git 原樣印出那個 byte,Python 的 splitlines
+    // 會在 \r 斷開(於是把路徑截斷成不存在的路徑),split("\n") 不會。兩邊都
+    // 不報錯,只是 pruneOrphanWorktrees 清掉的東西不一樣。
+    //
+    // Python 實跑同一份輸入(list_worktree_paths 的迴圈)得到 ['/repo/wt']。
+    const porcelain = "worktree /repo\nHEAD abc\n\nworktree /repo/wt\rcr\nHEAD def\n";
+    expect(parseWorktreePaths(porcelain, "/repo")).toEqual(["/repo/wt"]);
+  });
 });
 
 describe("worktreeExists against real git", () => {
