@@ -213,5 +213,10 @@ export function transition(
   if (phase === "escalated" && event === HUMAN_RESUME_FIX) {
     return ["fix", iteration];
   }
-  throw new InvalidTransition(`no transition from ${phase} on ${event}`);
+  // Python 是 `"no transition from %r on %r"`——%r 會加引號。這段訊息由
+  // cli 的 main() 原樣印成 `error: ...`,所以少了引號就是使用者看得見的
+  // 分歧:PY "no transition from 'apply' on 'no_such_event'" /
+  // TS(修前) "no transition from apply on no_such_event"。
+  // (%r 對含單引號的字串會改用雙引號包;phase/event 是識別字,這裡不重現。)
+  throw new InvalidTransition(`no transition from '${phase}' on '${event}'`);
 }

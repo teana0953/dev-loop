@@ -1,9 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
+import {
+  writeFileSync, readFileSync, mkdtempSync, mkdirSync, readdirSync, existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { TS_COMMANDS, main } from "./cli.js";
+import { makeCheckpoint, saveCheckpoint, loadCheckpoint } from "./checkpoint.js";
 
 const CLI = join(process.cwd(), "dist", "cli.js");
 const WRAPPER = join(process.cwd(), "bin", "devloop");
@@ -159,11 +162,13 @@ describe("cli status (delegated to Python — C1)", () => {
 describe("command routing", () => {
   it("routes every command it does not own to Python", async () => {
     const seen: string[][] = [];
-    const rc = await main(["event", "--file", "x", "--event", "apply_done"], {
+    // `gate` 還沒移植(下一個任務才會),所以它是這條「不屬於我就轉給
+    // Python」的樣本。原本用的是 `event`,而 event 已在本任務進 TS_COMMANDS。
+    const rc = await main(["gate", "--file", "x", "--cmd", "true"], {
       delegate: (argv) => { seen.push(argv); return 7; },
     });
     expect(rc).toBe(7);
-    expect(seen).toEqual([["event", "--file", "x", "--event", "apply_done"]]);
+    expect(seen).toEqual([["gate", "--file", "x", "--cmd", "true"]]);
   });
 
   it("routes an unknown command to Python rather than inventing its own error", async () => {
@@ -359,5 +364,256 @@ describe("model: repeated flags and the empty-string --config edge case (M8/M9)"
     // real profile/model that happens to live at the default relative path.
     const rc = await main(["model", "--stage", "apply", "--config", ""]);
     expect(rc).toBe(0);
+  });
+});
+
+/**
+ * event 命令 + backbone(applyEvent / saveWithHistory)。
+ *
+ * 每條的預期值都抄自 Python 的實測輸出(`python3 -m devloop.cli event ...`),
+ * 不是從 TS 實作反推的。
+ */
+describe("event", () => {
+  function fixture(fields: Record<string, unknown> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-event-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "apply", change_id: "c1", branch: "b", ...fields }),
+      file,
+    );
+    return file;
+  }
+
+  /** cli.test.ts 現行的攔截慣例(見 model 那組):vitest spy,不是憑空 import。 */
+  function capture(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const spy = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => spy.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  function historyLines(file: string): string[] {
+    return readFileSync(join(dirname(file), "history.jsonl"), "utf-8").trim().split("\n");
+  }
+
+  it("applies the transition, prints the new state, and appends one history line", async () => {
+    // PY: stdout "phase=gate iteration=0\n", exit 0, history 一行
+    // {"ts": ..., "event": "apply_done", "from": "apply", "to": "gate", "iteration": 0}
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main(["event", "--file", file, "--event", "apply_done"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=gate iteration=0\n");
+    expect(loadCheckpoint(file).phase).toBe("gate");
+    const hist = historyLines(file);
+    expect(hist.length).toBe(1);
+    const entry = JSON.parse(hist[0] as string) as Record<string, unknown>;
+    expect(entry.event).toBe("apply_done");
+    expect(entry.from).toBe("apply");
+    expect(entry.to).toBe("gate");
+    expect(entry.iteration).toBe(0);
+  });
+
+  it("rejects qa_skip outside the light non-uiux profile", async () => {
+    // Python:裁剪必須有檔位授權,且 UX 線不可裁。exit 2,checkpoint 不動。
+    // PY stderr(實測):
+    //   error: qa_skip requires flow_profile=light and needs_uiux=false (got full/False)
+    // 注意是 Python 的 `False`,不是 JS 的 `false`。
+    const file = fixture({ phase: "qa", flow_profile: "full" });
+    const err = capture("stderr");
+    const rc = await main(["event", "--file", file, "--event", "qa_skip"]);
+    const printed = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(printed).toBe(
+      "error: qa_skip requires flow_profile=light and needs_uiux=false (got full/False)\n",
+    );
+    expect(loadCheckpoint(file).phase).toBe("qa");
+  });
+
+  it("allows qa_skip on light without uiux", async () => {
+    // PY: "phase=review iteration=0", exit 0
+    const file = fixture({ phase: "qa", flow_profile: "light", needs_uiux: false });
+    const out = capture("stdout");
+    const rc = await main(["event", "--file", file, "--event", "qa_skip"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=review iteration=0\n");
+    expect(loadCheckpoint(file).phase).toBe("review");
+  });
+
+  it("rejects qa_skip on light WITH uiux", async () => {
+    // light+uiux 的 QA 保留以驗 UX 驗收——這一半的守門很容易寫成只看
+    // flow_profile 而漏掉 needs_uiux,所以兩半各有一條。
+    // PY stderr(實測):"... (got light/True)"
+    const file = fixture({ phase: "qa", flow_profile: "light", needs_uiux: true });
+    const err = capture("stderr");
+    const rc = await main(["event", "--file", file, "--event", "qa_skip"]);
+    const printed = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(printed).toBe(
+      "error: qa_skip requires flow_profile=light and needs_uiux=false (got light/True)\n",
+    );
+    expect(loadCheckpoint(file).phase).toBe("qa");
+  });
+
+  it("treats a container needs_uiux as truthy, the way Python does", async () => {
+    // needs_uiux 沒有型別收斂,磁碟上可以是任何 JSON。Python 的
+    // `not cp.needs_uiux` 對 `[]` 是 True(放行)、對 `[0]` 是 False(擋)。
+    // 直譯成 JS 的 `!cp.needs_uiux` 兩者都會放行——`[]` 在 JS 是 truthy。
+    const allowed = fixture({ phase: "qa", flow_profile: "light", needs_uiux: [] as unknown as boolean });
+    const out = capture("stdout");
+    const rcAllowed = await main(["event", "--file", allowed, "--event", "qa_skip"]);
+    out.restore();
+    expect(rcAllowed).toBe(0);
+
+    const blocked = fixture({ phase: "qa", flow_profile: "light", needs_uiux: [0] as unknown as boolean });
+    const err = capture("stderr");
+    const rcBlocked = await main(["event", "--file", blocked, "--event", "qa_skip"]);
+    err.restore();
+    expect(rcBlocked).toBe(2);
+  });
+
+  it("resets the retry counters on a human resume", async () => {
+    // PY: "phase=fix iteration=0";iteration/propose_attempts/gate_failures 全歸零
+    const file = fixture({
+      phase: "escalated", iteration: 2, propose_attempts: 3, gate_failures: 4,
+    });
+    const out = capture("stdout");
+    const rc = await main(["event", "--file", file, "--event", "human_resume_fix"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=fix iteration=0\n");
+    const cp = loadCheckpoint(file);
+    expect([cp.iteration, cp.propose_attempts, cp.gate_failures]).toEqual([0, 0, 0]);
+  });
+
+  it("records --finish-mode when given", async () => {
+    const file = fixture({ phase: "qa" });
+    const out = capture("stdout");
+    expect(await main(["event", "--file", file, "--event", "qa_pass", "--finish-mode", "pr"]))
+      .toBe(0);
+    out.restore();
+    expect(loadCheckpoint(file).finish_mode).toBe("pr");
+  });
+
+  it("rejects a --finish-mode outside argparse's choices", async () => {
+    // PY(實測)exit 2:
+    //   devloop event: error: argument --finish-mode: invalid choice: 'zzz'
+    //   (choose from 'merge', 'pr')
+    // 空字串同樣是「非法選項」,不是「沒傳」——這條把兩者都釘住。
+    const file = fixture({ phase: "qa" });
+    const err = capture("stderr");
+    expect(await main(["event", "--file", file, "--event", "qa_pass", "--finish-mode", "zzz"]))
+      .toBe(2);
+    expect(await main(["event", "--file", file, "--event", "qa_pass", "--finish-mode", ""]))
+      .toBe(2);
+    err.restore();
+    expect(loadCheckpoint(file).phase).toBe("qa");
+  });
+
+  it("reports an impossible transition as exit 2, not an unhandled throw", async () => {
+    // PY stderr(實測):error: no transition from 'apply' on 'no_such_event'
+    // %r 的引號是訊息的一部分。
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["event", "--file", file, "--event", "no_such_event"]);
+    const printed = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(printed).toBe("error: no transition from 'apply' on 'no_such_event'\n");
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("rejects a non-integer --max", async () => {
+    // PY(實測)exit 2:devloop event: error: argument --max: invalid int value: 'x'
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["event", "--file", file, "--event", "apply_done", "--max", "x"]);
+    err.restore();
+    expect(rc).toBe(2);
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("honours --max when the gate-pass counter would exceed it", async () => {
+    // gate + gate_pass:iteration+1 超過 max 就升級 escalated。--max 走
+    // parseIntFlag,傳 0 時 iteration 1 > 0 → escalated(PY 實測相同)。
+    const file = fixture({ phase: "gate" });
+    const out = capture("stdout");
+    const rc = await main(["event", "--file", file, "--event", "gate_pass", "--max", "0"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=escalated iteration=1\n");
+  });
+
+  it("rejects unrecognized flags instead of ignoring them", async () => {
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["event", "--file", file, "--event", "apply_done", "--bogus", "1"]);
+    err.restore();
+    expect(rc).toBe(2);
+    expect(loadCheckpoint(file).phase).toBe("apply");
+  });
+
+  it("requires --file and --event", async () => {
+    const err = capture("stderr");
+    expect(await main(["event", "--event", "apply_done"])).toBe(2);
+    expect(await main(["event", "--file", fixture()])).toBe(2);
+    err.restore();
+  });
+
+  it("still saves the checkpoint when the history append fails", async () => {
+    // Python:history 是 best-effort 觀測資料,失敗只警告。把 history.jsonl
+    // 換成目錄就能讓 append 失敗而 checkpoint save 不受影響。
+    const file = fixture();
+    mkdirSync(join(dirname(file), "history.jsonl"), { recursive: true });
+    const err = capture("stderr");
+    const out = capture("stdout");
+    const rc = await main(["event", "--file", file, "--event", "apply_done"]);
+    const warned = err.text();
+    const printed = out.text();
+    out.restore();
+    err.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe("phase=gate iteration=0\n");
+    expect(warned).toContain("warning: history append failed:");
+    expect(loadCheckpoint(file).phase).toBe("gate");
+  });
+
+  it("does not arm a watcher when the checkpoint has no resume command", async () => {
+    const file = fixture();
+    const out = capture("stdout");
+    await main(["event", "--file", file, "--event", "apply_done"]);
+    out.restore();
+    expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(false);
+  });
+
+  it("arms a watcher after saving when auto_arm is on and a resume command exists", async () => {
+    // --exec 用 /usr/bin/true,watcher 跑一次就自己結束,不留孤兒行程。
+    // resume_exec 同時寫進 fixture 的 checkpoint 檔:ensureArmedAfterSave 讀
+    // 傳進去的物件,ensureArmed 卻是從磁碟重讀,只餵其中一邊會讓變異體從
+    // 「合法 skip」那條路溜掉還是綠的。
+    const file = fixture({ resume_exec: "/usr/bin/true" });
+    const out = capture("stdout");
+    await main(["event", "--file", file, "--event", "apply_done"]);
+    out.restore();
+    expect(loadCheckpoint(file).resume_exec).toBe("/usr/bin/true");
+    expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(true);
+  });
+
+  it("does not arm a watcher when config.json turns auto_arm off", async () => {
+    const file = fixture({ resume_exec: "/usr/bin/true" });
+    writeFileSync(join(dirname(file), "config.json"), JSON.stringify({ auto_arm: false }), "utf-8");
+    const out = capture("stdout");
+    await main(["event", "--file", file, "--event", "apply_done"]);
+    out.restore();
+    expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(false);
   });
 });

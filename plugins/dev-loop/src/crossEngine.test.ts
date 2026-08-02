@@ -71,6 +71,8 @@ function writeConfig(dir: string, fields: Record<string, unknown>): string {
 interface MatrixCase {
   name: string;
   build: (dir: string) => string[];
+  /** 比對前的歸一化;dir 已被換成 <DIR>,這裡處理 pid、時間戳之類的易變欄位。 */
+  normalize?: (stdout: string) => string;
 }
 
 const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
@@ -122,6 +124,72 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       ],
     },
   ],
+  // 這些 case 一律不放 `resume_exec`,矩陣測試才不會 spawn watcher。
+  // auto-arm 的跨引擎行為由後續的交叉臂測試負責。
+  event: [
+    {
+      name: "a plain transition",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "apply_done",
+      ],
+    },
+    {
+      name: "qa_skip refused outside the light profile",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "qa", change_id: "c1", branch: "b", flow_profile: "full" }),
+        "--event", "qa_skip",
+      ],
+    },
+    {
+      name: "qa_skip allowed on light without uiux",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, {
+          phase: "qa", change_id: "c1", branch: "b",
+          flow_profile: "light", needs_uiux: false,
+        }),
+        "--event", "qa_skip",
+      ],
+    },
+    {
+      name: "a human resume that clears the counters",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, {
+          phase: "escalated", change_id: "c1", branch: "b",
+          iteration: 2, propose_attempts: 3, gate_failures: 4,
+        }),
+        "--event", "human_resume_fix",
+      ],
+    },
+    {
+      name: "a --finish-mode outside the choices",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "qa", change_id: "c1", branch: "b" }),
+        "--event", "qa_pass", "--finish-mode", "zzz",
+      ],
+    },
+    {
+      name: "an invalid event",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "no_such_event",
+      ],
+    },
+    {
+      name: "a non-integer --max",
+      build: (dir) => [
+        "event", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--event", "apply_done", "--max", "x",
+      ],
+    },
+  ],
   archive: [
     {
       name: "archive fails identically for a nonexistent openspec change",
@@ -151,12 +219,19 @@ describe("cross-engine command matrix (I7)", () => {
 
     for (const c of cases ?? []) {
       it(`${cmd}: ${c.name}`, () => {
-        const dir = mkdtempSync(join(tmpdir(), "cross-engine-"));
-        const argv = c.build(dir);
-        const ts = runTs(argv);
-        const py = runPy(argv);
+        // 每個引擎各自的 dir:變更型命令(event 起)會改 checkpoint,共用 dir
+        // 會讓第二個引擎看到第一個引擎改過的狀態,比出來的差異全是假的。
+        const dirTs = mkdtempSync(join(tmpdir(), "cross-engine-ts-"));
+        const dirPy = mkdtempSync(join(tmpdir(), "cross-engine-py-"));
+        const ts = runTs(c.build(dirTs));
+        const py = runPy(c.build(dirPy));
+        const norm = (s: string, dir: string): string => {
+          const withoutDir = s.split(dir).join("<DIR>");
+          return c.normalize ? c.normalize(withoutDir) : withoutDir;
+        };
         expect(ts.exit_code, `${cmd}/${c.name}: exit code`).toBe(py.exit_code);
-        expect(ts.stdout, `${cmd}/${c.name}: stdout`).toBe(py.stdout);
+        expect(norm(ts.stdout, dirTs), `${cmd}/${c.name}: stdout`)
+          .toBe(norm(py.stdout, dirPy));
       });
     }
   }

@@ -4,13 +4,24 @@ import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCheckpoint } from "./checkpoint.js";
+import { loadCheckpoint, saveCheckpoint, type Checkpoint } from "./checkpoint.js";
+import { appendHistory } from "./history.js";
+import {
+  transition,
+  InvalidTransition,
+  QA_SKIP,
+  HUMAN_RESUME_PROPOSE,
+  HUMAN_RESUME_FIX,
+  DEFAULT_MAX_ITERATIONS,
+} from "./statemachine.js";
+import { ensureArmedAfterSave } from "./watcher.js";
+import { pyParseInt } from "./pystr.js";
 import { archiveChange } from "./openspec.js";
 import type { OpenSpecResult } from "./openspec.js";
 import { archiveWorkfiles as archiveWorkfilesReal } from "./housekeeping.js";
 import { pendingUnits, type Unit } from "./units.js";
 import { loadConfig, resolveModel } from "./config.js";
-import { pyIndex } from "./jsonio.js";
+import { pyIndex, pyTruthy } from "./jsonio.js";
 
 /**
  * 本引擎自己處理的子命令。其餘一律委派回 Python。
@@ -27,7 +38,7 @@ import { pyIndex } from "./jsonio.js";
  * silent regressions. Status stays on Python until the `watcher` module is
  * ported (next milestone) and a full port can be done properly.
  */
-export const TS_COMMANDS = ["archive", "units-status", "model"] as const;
+export const TS_COMMANDS = ["archive", "units-status", "model", "event"] as const;
 
 export interface CliDeps {
   delegate: (argv: string[]) => number;
@@ -131,6 +142,108 @@ function cmdModel(stage: string, configPath: string): number {
 }
 
 /**
+ * checkpoint save + transition 追加到 history.jsonl + auto-arm。
+ *
+ * history 是 best-effort 的觀測資料:寫失敗只在 stderr 警告,不能反噬已經
+ * 成功的主命令。auto-arm 同理(在 ensureArmedAfterSave 裡自己處理)。
+ *
+ * `fromPhase` 收 `string | null` 是為了對齊 Python:`_cmd_start` 傳的是
+ * `None`,append_history 直接把它寫進 JSON 變成 `"from": null`。history.ts 的
+ * `appendHistory` 只收 `string`,所以這裡用 `?? ""` 收斂——`start` 在本里程碑
+ * 還沒移植過來,這個分歧目前不可達;等 `start` 進 TS 時要改的是 history.ts 的
+ * 簽章(讓它收 `string | null`),不是在這裡把 null 悄悄變成空字串。
+ */
+function saveWithHistory(
+  cp: Checkpoint,
+  file: string,
+  event: string,
+  fromPhase: string | null,
+): void {
+  saveCheckpoint(cp, file);
+  try {
+    appendHistory(file, event, fromPhase ?? "", cp.phase, cp.iteration);
+  } catch (exc) {
+    process.stderr.write(`warning: history append failed: ${String((exc as Error).message)}\n`);
+  }
+  ensureArmedAfterSave(cp, file);
+}
+
+function applyEvent(cp: Checkpoint, event: string, maxIterations: number): Checkpoint {
+  const [newPhase, newIteration] = transition(cp.phase, cp.iteration, event, maxIterations);
+  cp.phase = newPhase;
+  cp.iteration = newIteration;
+  return cp;
+}
+
+/**
+ * Python 的 `"%s" % value`。這裡只用在 qa_skip 守門的錯誤訊息上,而該訊息會
+ * 把 checkpoint 上未經型別收斂的 `needs_uiux` 直接插進去。
+ *
+ * 直譯成 `String(v)` 會印出 JS 的 `false`,Python 印的是 `False`——實測
+ * `event --event qa_skip`(flow_profile=full)PY 印
+ * "(got full/False)"、TS(修前)印 "(got full/false)"。null 同理(`None`)。
+ *
+ * 已知未涵蓋:容器型別。Python 的 `%s` 對 list/dict 走 repr,用單引號
+ * (`{'a': 1}`),JSON.stringify 用雙引號。checkpoint 的 needs_uiux 要是容器
+ * 才踩得到,實務上不會發生,且訊息文字的分歧已登記在
+ * fixtures/parity/README.md,不值得為此手寫一份 Python repr。
+ */
+function pyFormat(value: unknown): string {
+  if (value === true) {
+    return "True";
+  }
+  if (value === false) {
+    return "False";
+  }
+  if (value === null || value === undefined) {
+    return "None";
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function cmdEvent(
+  file: string,
+  event: string,
+  max: number,
+  finishMode: string | null,
+): number {
+  const cp = loadCheckpoint(file);
+  // qa_skip 只在 light 且非 uiux 放行:裁剪必須有檔位授權,且 UX 線不可裁
+  // (light+uiux 的 QA 保留以驗 UX 驗收)。guard 讀 checkpoint(start 時凍結)。
+  //
+  // `!cp.needs_uiux` 是 Python 的 `not cp.needs_uiux`:needs_uiux 沒有經過任何
+  // 型別收斂(loadCheckpoint 原樣帶入磁碟上的 JSON),但 JS 與 Python 對
+  // 這裡可能出現的值 falsy 判定一致的只有 false/null/0/""。容器(`[]`/`{}`)
+  // 兩邊相反,所以照樣走 pyTruthy 才安全——見下。
+  if (event === QA_SKIP && !(cp.flow_profile === "light" && !pyTruthy(cp.needs_uiux))) {
+    process.stderr.write(
+      "error: qa_skip requires flow_profile=light and needs_uiux=false "
+      + `(got ${pyFormat(cp.flow_profile)}/${pyFormat(cp.needs_uiux)})\n`,
+    );
+    return 2;
+  }
+  const fromPhase = cp.phase;
+  applyEvent(cp, event, max);
+  if (event === HUMAN_RESUME_PROPOSE || event === HUMAN_RESUME_FIX) {
+    cp.iteration = 0;
+    cp.propose_attempts = 0;
+    cp.gate_failures = 0;
+  }
+  // Python 是 `if getattr(args, "finish_mode", None):`——truthy 檢查,不是
+  // `is not None`。argparse 的 choices 已經把值限制在 merge/pr,所以兩者
+  // 在可達輸入上等價。
+  if (finishMode !== null && finishMode !== "") {
+    cp.finish_mode = finishMode;
+  }
+  saveWithHistory(cp, file, event, fromPhase);
+  process.stdout.write(`phase=${cp.phase} iteration=${cp.iteration}\n`);
+  return 0;
+}
+
+/**
  * `--key value` 形式的旗標解析。回傳每個已知旗標的**最後一次**出現(argparse
  * 的 store 動作就是後蓋前:`model --stage apply --stage fix` 兩邊都要落地
  * `fix`),以及沒被任何已知旗標(或其值)吃掉的殘餘 token。
@@ -180,7 +293,53 @@ function rawFlag(values: Map<string, string>, name: string): string | undefined 
   return values.get(name);
 }
 
+/**
+ * Python 的 `type=int`:非整數 argparse 回 2 並印 usage。這裡回 null 讓呼叫端
+ * 回 2——訊息文字與 argparse 不同(少一段 usage),那是既有的、寫在
+ * fixtures/parity/README.md 的可接受分歧。
+ *
+ * 用 pyParseInt 而不是 Number()/parseInt():`int("0x10")` 在 Python 是
+ * ValueError、`Number("0x10")` 是 16;`int("1_0")` 是 10、`Number` 是 NaN;
+ * `parseInt("5x")` 是 5、Python 直接 ValueError。三種都會讓 --max 被誤解。
+ */
+function parseIntFlag(
+  values: Map<string, string>,
+  name: string,
+  fallback: number,
+): number | null {
+  const raw = rawFlag(values, name);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = pyParseInt(raw);
+  if (parsed === null) {
+    process.stderr.write(`error: argument ${name}: invalid int value: '${raw}'\n`);
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * Python 的 `main()` 把 `args.func(args)` 包在 try 裡,把 InvalidTransition
+ * 轉成 `error: <訊息>` + exit 2(未知事件、或該階段不接受該事件)。沒有這層,
+ * `event --event no_such_event` 在 TS 會變成未捕捉例外 + stack trace + exit 1。
+ *
+ * (Python 同一層還接 ReportError,但那是 review/qa 命令的例外,本里程碑還沒
+ * 移植;等那些命令進 TS 時在這裡補第二個分支。)
+ */
 export async function main(argv: string[], deps: Partial<CliDeps> = {}): Promise<number> {
+  try {
+    return await dispatch(argv, deps);
+  } catch (exc) {
+    if (exc instanceof InvalidTransition) {
+      process.stderr.write(`error: ${exc.message}\n`);
+      return 2;
+    }
+    throw exc;
+  }
+}
+
+async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number> {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === undefined || !(TS_COMMANDS as readonly string[]).includes(cmd)) {
@@ -217,6 +376,36 @@ export async function main(argv: string[], deps: Partial<CliDeps> = {}): Promise
       return 2;
     }
     return cmdUnitsStatus(file);
+  }
+  if (cmd === "event") {
+    const { values, unknown } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = requiredFlag(values, "--file");
+    const event = requiredFlag(values, "--event");
+    if (file === undefined || event === undefined) {
+      process.stderr.write("event requires --file and --event\n");
+      return 2;
+    }
+    const max = parseIntFlag(values, "--max", DEFAULT_MAX_ITERATIONS);
+    if (max === null) {
+      return 2;
+    }
+    // Python 的 --finish-mode 有 choices=("merge","pr");給別的值 argparse 回 2。
+    // 這裡用 rawFlag 而不是 requiredFlag:`--finish-mode ""` 在 argparse 是
+    // 「非法選項」exit 2(實測),不是「沒傳」;requiredFlag 的「空字串視同
+    // 缺席」規則會把它靜默吃掉變成 exit 0。
+    const finishMode = rawFlag(values, "--finish-mode") ?? null;
+    if (finishMode !== null && finishMode !== "merge" && finishMode !== "pr") {
+      process.stderr.write(
+        `error: argument --finish-mode: invalid choice: '${finishMode}' `
+        + "(choose from 'merge', 'pr')\n",
+      );
+      return 2;
+    }
+    return cmdEvent(file, event, max, finishMode);
   }
   if (cmd === "model") {
     const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);

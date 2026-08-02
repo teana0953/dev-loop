@@ -4,8 +4,12 @@
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
-import { dirname as dirname2, join as join2, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname as dirname5, join as join4, resolve } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/checkpoint.ts
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 // src/jsonio.ts
 import { readFileSync } from "node:fs";
@@ -52,6 +56,11 @@ var DEFAULTS = {
 function makeCheckpoint(partial) {
   return { ...DEFAULTS, ...partial };
 }
+function saveCheckpoint(cp, path) {
+  cp.updated_at = (/* @__PURE__ */ new Date()).toISOString();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(cp, null, 2), "utf-8");
+}
 var REQUIRED_CHECKPOINT_KEYS = ["phase", "change_id", "branch"];
 var KNOWN_CHECKPOINT_KEYS = /* @__PURE__ */ new Set([
   ...REQUIRED_CHECKPOINT_KEYS,
@@ -72,81 +81,130 @@ function loadCheckpoint(path) {
   return makeCheckpoint(data);
 }
 
-// src/openspec.ts
-import { spawnSync } from "node:child_process";
-var defaultRunner = (cmd) => {
-  const [command, ...args] = cmd;
-  const proc = spawnSync(command, args, { encoding: "utf8" });
-  if (proc.error) {
-    throw proc.error;
-  }
-  const code = proc.status ?? 1;
-  return [code, (proc.stdout ?? "") + (proc.stderr ?? "")];
+// src/history.ts
+import { writeFileSync as writeFileSync2, mkdirSync as mkdirSync2 } from "node:fs";
+import { dirname as dirname2, join } from "node:path";
+function historyPath(checkpointPath) {
+  const checkpointDir = dirname2(checkpointPath);
+  return join(checkpointDir, "history.jsonl");
+}
+function appendHistory(checkpointPath, event, fromPhase, toPhase, iteration) {
+  const entry = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    event,
+    from: fromPhase,
+    to: toPhase,
+    iteration
+  };
+  const histPath = historyPath(checkpointPath);
+  const histDir = dirname2(histPath);
+  mkdirSync2(histDir, { recursive: true });
+  writeFileSync2(histPath, JSON.stringify(entry) + "\n", { flag: "a", encoding: "utf-8" });
+}
+
+// src/statemachine.ts
+var APPLY_DONE = "apply_done";
+var PROPOSE_CLEAN = "propose_clean";
+var PROPOSE_BLOCKING_PROPOSAL = "propose_blocking_proposal";
+var PROPOSE_BLOCKING_DESIGN = "propose_blocking_design";
+var GATE_PASS = "gate_pass";
+var GATE_FAIL = "gate_fail";
+var QA_PASS = "qa_pass";
+var QA_FAIL = "qa_fail";
+var QA_SKIP = "qa_skip";
+var REVIEW_NO_BLOCKING = "review_no_blocking";
+var REVIEW_BLOCKING_CODE = "review_blocking_code";
+var REVIEW_BLOCKING_PROPOSAL = "review_blocking_proposal";
+var FIX_DONE = "fix_done";
+var FINISH_DONE = "finish_done";
+var PROPOSE_DONE = "propose_done";
+var TEARDOWN_DONE = "teardown_done";
+var PROPOSE_RETRY_EXCEEDED = "propose_retry_exceeded";
+var GATE_RETRY_EXCEEDED = "gate_retry_exceeded";
+var HUMAN_RESUME_PROPOSE = "human_resume_propose";
+var HUMAN_RESUME_FIX = "human_resume_fix";
+var DEFAULT_MAX_ITERATIONS = 3;
+var InvalidTransition = class extends Error {
 };
-function run(cmd, runner = defaultRunner) {
-  const [code, output] = runner(cmd);
-  return { ok: code === 0, command: cmd, output };
-}
-function archiveChange(changeId, runner) {
-  return run(["openspec", "archive", changeId, "--yes"], runner);
-}
-
-// src/housekeeping.ts
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  utimesSync
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
-var KEEP_FILES = ["config.json", "watcher.pid"];
-function archiveWorkfiles(checkpointPath, changeId) {
-  const cpName = basename(checkpointPath);
-  const root = dirname(checkpointPath);
-  const dest = join(root, "archive", String(changeId));
-  const keep = /* @__PURE__ */ new Set([...KEEP_FILES, cpName]);
-  const archived = [];
-  const names = readdirSync(root).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-  for (const name of names) {
-    const p = join(root, name);
-    const st = statSync(p, { throwIfNoEntry: false });
-    if (st === void 0 || !st.isFile() || keep.has(name)) {
-      continue;
+function transition(phase, iteration, event, maxIterations = DEFAULT_MAX_ITERATIONS) {
+  if (phase === "proposal_review" && event === PROPOSE_CLEAN) {
+    return ["apply", iteration];
+  }
+  if (phase === "proposal_review" && event === PROPOSE_BLOCKING_PROPOSAL) {
+    return ["propose", iteration];
+  }
+  if (phase === "proposal_review" && event === PROPOSE_BLOCKING_DESIGN) {
+    return ["escalated", iteration];
+  }
+  if (phase === "apply" && event === APPLY_DONE) {
+    return ["gate", iteration];
+  }
+  if (phase === "gate" && event === GATE_PASS) {
+    const newIteration = iteration + 1;
+    if (newIteration > maxIterations) {
+      return ["escalated", newIteration];
     }
-    mkdirSync(dest, { recursive: true });
-    renameSync(p, join(dest, name));
-    archived.push(name);
+    return ["qa", newIteration];
   }
-  const meta = join(root, "changes", `${changeId}.json`);
-  if (existsSync(meta)) {
-    mkdirSync(dest, { recursive: true });
-    renameSync(meta, join(dest, basename(meta)));
-    archived.push(`changes/${basename(meta)}`);
+  if (phase === "qa" && event === QA_PASS) {
+    return ["review", iteration];
   }
-  if (existsSync(checkpointPath)) {
-    mkdirSync(dest, { recursive: true });
-    const target = join(dest, cpName);
-    copyFileSync(checkpointPath, target);
-    const st = statSync(checkpointPath);
-    chmodSync(target, st.mode);
-    utimesSync(target, st.atime, st.mtime);
-    archived.push(`${cpName} (snapshot)`);
+  if (phase === "qa" && event === QA_SKIP) {
+    return ["review", iteration];
   }
-  return archived;
+  if (phase === "qa" && event === QA_FAIL) {
+    return ["fix", iteration];
+  }
+  if (phase === "gate" && event === GATE_FAIL) {
+    return ["fix", iteration];
+  }
+  if (phase === "review" && event === REVIEW_NO_BLOCKING) {
+    return ["merge", iteration];
+  }
+  if (phase === "review" && event === REVIEW_BLOCKING_CODE) {
+    return ["fix", iteration];
+  }
+  if (phase === "review" && event === REVIEW_BLOCKING_PROPOSAL) {
+    return ["propose", iteration];
+  }
+  if (phase === "fix" && event === FIX_DONE) {
+    return ["gate", iteration];
+  }
+  if (phase === "merge" && event === FINISH_DONE) {
+    return ["teardown", iteration];
+  }
+  if (phase === "teardown" && event === TEARDOWN_DONE) {
+    return ["done", iteration];
+  }
+  if (phase === "propose" && event === PROPOSE_DONE) {
+    return ["proposal_review", iteration];
+  }
+  if (phase === "proposal_review" && event === PROPOSE_RETRY_EXCEEDED) {
+    return ["escalated", iteration];
+  }
+  if (phase === "gate" && event === GATE_RETRY_EXCEEDED) {
+    return ["escalated", iteration];
+  }
+  if (phase === "escalated" && event === HUMAN_RESUME_PROPOSE) {
+    return ["propose", iteration];
+  }
+  if (phase === "escalated" && event === HUMAN_RESUME_FIX) {
+    return ["fix", iteration];
+  }
+  throw new InvalidTransition(`no transition from '${phase}' on '${event}'`);
 }
 
-// src/units.ts
-var PENDING = ["pending", "in_progress"];
-function pendingUnits(units) {
-  return units.filter((u) => PENDING.includes(pyIndex(u, "status")));
-}
+// src/watcher.ts
+import { spawn } from "node:child_process";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname3, join as join2 } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/adapter.ts
+var DEFAULT_HEARTBEAT = 1800;
 
 // src/config.ts
-import { existsSync as existsSync2 } from "node:fs";
+import { existsSync } from "node:fs";
 function defaultConfig() {
   return {
     finish: null,
@@ -195,7 +253,7 @@ function resolveModel(stage, config) {
   return null;
 }
 function loadConfig(path) {
-  if (!existsSync2(path)) {
+  if (!existsSync(path)) {
     return defaultConfig();
   }
   const data = readJsonObject(path, "config");
@@ -231,10 +289,283 @@ function loadConfig(path) {
   };
 }
 
+// src/pystr.ts
+var PY_STR_WS = "\\t\\n\\v\\f\\r\\x1c\\x1d\\x1e\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+var PY_STR_STRIP = new RegExp(`^[${PY_STR_WS}]+|[${PY_STR_WS}]+$`, "g");
+function pyStrip(s) {
+  return s.replace(PY_STR_STRIP, "");
+}
+var PY_INT_WS = "\\t\\n\\v\\f\\r \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+var PY_INT_STRIP = new RegExp(`^[${PY_INT_WS}]+|[${PY_INT_WS}]+$`, "g");
+var INT_PATTERN = /^[+-]?\d(?:_?\d)*$/;
+function pyParseInt(s) {
+  const trimmed = s.replace(PY_INT_STRIP, "");
+  if (!INT_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return Number(trimmed.replace(/_/g, ""));
+}
+
+// src/shlex.ts
+var SAFE = /^[a-zA-Z0-9_@%+=:,./-]+$/;
+var WHITESPACE = " 	\r\n";
+function shlexQuote(s) {
+  if (s === "") {
+    return "''";
+  }
+  if (SAFE.test(s)) {
+    return s;
+  }
+  return "'" + s.replace(/'/g, `'"'"'`) + "'";
+}
+function shlexJoin(parts) {
+  return parts.map(shlexQuote).join(" ");
+}
+function shlexSplit(s) {
+  const out = [];
+  let cur = "";
+  let started = false;
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (WHITESPACE.includes(c)) {
+      if (started) {
+        out.push(cur);
+        cur = "";
+        started = false;
+      }
+      i += 1;
+      continue;
+    }
+    started = true;
+    if (c === "'") {
+      i += 1;
+      const end = s.indexOf("'", i);
+      if (end === -1) {
+        throw new Error("No closing quotation");
+      }
+      cur += s.slice(i, end);
+      i = end + 1;
+      continue;
+    }
+    if (c === '"') {
+      i += 1;
+      let closed = false;
+      while (i < s.length) {
+        const d = s[i];
+        if (d === "\\" && i + 1 < s.length && (s[i + 1] === '"' || s[i + 1] === "\\")) {
+          cur += s[i + 1];
+          i += 2;
+          continue;
+        }
+        if (d === '"') {
+          closed = true;
+          i += 1;
+          break;
+        }
+        cur += d;
+        i += 1;
+      }
+      if (!closed) {
+        throw new Error("No closing quotation");
+      }
+      continue;
+    }
+    if (c === "\\") {
+      if (i + 1 < s.length) {
+        cur += s[i + 1];
+        i += 2;
+      } else {
+        throw new Error("No escaped character");
+      }
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  if (started) {
+    out.push(cur);
+  }
+  return out;
+}
+
+// src/watcher.ts
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    const code = e.code;
+    if (code === "ESRCH") {
+      return false;
+    }
+    if (code === "EPERM") {
+      return true;
+    }
+    throw e;
+  }
+  return true;
+}
+function watcherPidPath(checkpointPath) {
+  return join2(dirname3(checkpointPath), "watcher.pid");
+}
+function watcherLogPath(checkpointPath) {
+  return join2(dirname3(checkpointPath), "watcher-log.jsonl");
+}
+function watcherState(checkpointPath) {
+  const pidPath = watcherPidPath(checkpointPath);
+  if (!existsSync2(pidPath)) {
+    return ["absent", null];
+  }
+  const pid = pyParseInt(pyStrip(readFileSync2(pidPath, "utf-8")));
+  if (pid === null) {
+    return ["absent", null];
+  }
+  return pidAlive(pid) ? ["running", pid] : ["dead", pid];
+}
+function spawnWatcher(execCommand, heartbeat, logPath) {
+  const pluginRoot = dirname3(dirname3(fileURLToPath(import.meta.url)));
+  const cli = join2(pluginRoot, "dist", "cli.js");
+  const argv = [
+    cli,
+    "watch",
+    "--exec",
+    shlexJoin(execCommand),
+    "--heartbeat",
+    String(heartbeat)
+  ];
+  if (logPath) {
+    argv.push("--log", logPath);
+  }
+  const proc = spawn(process.execPath, argv, { detached: true, stdio: "ignore" });
+  proc.unref();
+  if (proc.pid === void 0) {
+    throw new Error("failed to spawn watcher: no pid");
+  }
+  return proc.pid;
+}
+function ensureArmed(checkpointPath, opts = {}) {
+  const heartbeat = opts.heartbeat ?? DEFAULT_HEARTBEAT;
+  const cp = loadCheckpoint(checkpointPath);
+  const override = opts.execOverride;
+  const execStr = pyTruthy(override) ? override : cp.resume_exec;
+  if (!pyTruthy(execStr)) {
+    return ["skipped", null];
+  }
+  const [state, pid] = watcherState(checkpointPath);
+  if (state === "running") {
+    return ["already", pid];
+  }
+  if (typeof execStr !== "string") {
+    throw new TypeError(
+      `resume_exec must be a string, got ${Array.isArray(execStr) ? "array" : typeof execStr}`
+    );
+  }
+  const newPid = spawnWatcher(
+    shlexSplit(execStr),
+    heartbeat,
+    watcherLogPath(checkpointPath)
+  );
+  const pidPath = watcherPidPath(checkpointPath);
+  mkdirSync3(dirname3(pidPath), { recursive: true });
+  writeFileSync3(pidPath, String(newPid), "utf-8");
+  return ["armed", newPid];
+}
+function ensureArmedAfterSave(cp, file) {
+  if (!pyTruthy(cp.resume_exec)) {
+    return;
+  }
+  if (cp.phase === "done") {
+    return;
+  }
+  const config = loadConfig(join2(dirname3(file), "config.json"));
+  if (!config.auto_arm) {
+    return;
+  }
+  try {
+    ensureArmed(file);
+  } catch (exc) {
+    process.stderr.write(`warning: auto-arm failed: ${String(exc.message)}
+`);
+  }
+}
+
+// src/openspec.ts
+import { spawnSync } from "node:child_process";
+var defaultRunner = (cmd) => {
+  const [command, ...args] = cmd;
+  const proc = spawnSync(command, args, { encoding: "utf8" });
+  if (proc.error) {
+    throw proc.error;
+  }
+  const code = proc.status ?? 1;
+  return [code, (proc.stdout ?? "") + (proc.stderr ?? "")];
+};
+function run(cmd, runner = defaultRunner) {
+  const [code, output] = runner(cmd);
+  return { ok: code === 0, command: cmd, output };
+}
+function archiveChange(changeId, runner) {
+  return run(["openspec", "archive", changeId, "--yes"], runner);
+}
+
+// src/housekeeping.ts
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync4,
+  readdirSync,
+  renameSync,
+  statSync,
+  utimesSync
+} from "node:fs";
+import { basename, dirname as dirname4, join as join3 } from "node:path";
+var KEEP_FILES = ["config.json", "watcher.pid"];
+function archiveWorkfiles(checkpointPath, changeId) {
+  const cpName = basename(checkpointPath);
+  const root = dirname4(checkpointPath);
+  const dest = join3(root, "archive", String(changeId));
+  const keep = /* @__PURE__ */ new Set([...KEEP_FILES, cpName]);
+  const archived = [];
+  const names = readdirSync(root).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  for (const name of names) {
+    const p = join3(root, name);
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st === void 0 || !st.isFile() || keep.has(name)) {
+      continue;
+    }
+    mkdirSync4(dest, { recursive: true });
+    renameSync(p, join3(dest, name));
+    archived.push(name);
+  }
+  const meta = join3(root, "changes", `${changeId}.json`);
+  if (existsSync3(meta)) {
+    mkdirSync4(dest, { recursive: true });
+    renameSync(meta, join3(dest, basename(meta)));
+    archived.push(`changes/${basename(meta)}`);
+  }
+  if (existsSync3(checkpointPath)) {
+    mkdirSync4(dest, { recursive: true });
+    const target = join3(dest, cpName);
+    copyFileSync(checkpointPath, target);
+    const st = statSync(checkpointPath);
+    chmodSync(target, st.mode);
+    utimesSync(target, st.atime, st.mtime);
+    archived.push(`${cpName} (snapshot)`);
+  }
+  return archived;
+}
+
+// src/units.ts
+var PENDING = ["pending", "in_progress"];
+function pendingUnits(units) {
+  return units.filter((u) => PENDING.includes(pyIndex(u, "status")));
+}
+
 // src/cli.ts
-var TS_COMMANDS = ["archive", "units-status", "model"];
+var TS_COMMANDS = ["archive", "units-status", "model", "event"];
 function delegateToPython(argv) {
-  const root = dirname2(dirname2(fileURLToPath(import.meta.url)));
+  const root = dirname5(dirname5(fileURLToPath2(import.meta.url)));
   const sep = process.platform === "win32" ? ";" : ":";
   const existing = process.env.PYTHONPATH;
   const proc = spawnSync2("python3", ["-m", "devloop.cli", ...argv], {
@@ -260,7 +591,7 @@ function cmdArchive(file, archive, sweep) {
   try {
     const archived = sweep(file, cp.change_id);
     process.stdout.write(
-      `archived workfiles: ${archived.length} -> ${join2(dirname2(file), "archive", cp.change_id)}
+      `archived workfiles: ${archived.length} -> ${join4(dirname5(file), "archive", cp.change_id)}
 `
     );
   } catch (exc) {
@@ -295,6 +626,61 @@ function cmdModel(stage, configPath) {
 `);
   return 0;
 }
+function saveWithHistory(cp, file, event, fromPhase) {
+  saveCheckpoint(cp, file);
+  try {
+    appendHistory(file, event, fromPhase ?? "", cp.phase, cp.iteration);
+  } catch (exc) {
+    process.stderr.write(`warning: history append failed: ${String(exc.message)}
+`);
+  }
+  ensureArmedAfterSave(cp, file);
+}
+function applyEvent(cp, event, maxIterations) {
+  const [newPhase, newIteration] = transition(cp.phase, cp.iteration, event, maxIterations);
+  cp.phase = newPhase;
+  cp.iteration = newIteration;
+  return cp;
+}
+function pyFormat(value) {
+  if (value === true) {
+    return "True";
+  }
+  if (value === false) {
+    return "False";
+  }
+  if (value === null || value === void 0) {
+    return "None";
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+function cmdEvent(file, event, max, finishMode) {
+  const cp = loadCheckpoint(file);
+  if (event === QA_SKIP && !(cp.flow_profile === "light" && !pyTruthy(cp.needs_uiux))) {
+    process.stderr.write(
+      `error: qa_skip requires flow_profile=light and needs_uiux=false (got ${pyFormat(cp.flow_profile)}/${pyFormat(cp.needs_uiux)})
+`
+    );
+    return 2;
+  }
+  const fromPhase = cp.phase;
+  applyEvent(cp, event, max);
+  if (event === HUMAN_RESUME_PROPOSE || event === HUMAN_RESUME_FIX) {
+    cp.iteration = 0;
+    cp.propose_attempts = 0;
+    cp.gate_failures = 0;
+  }
+  if (finishMode !== null && finishMode !== "") {
+    cp.finish_mode = finishMode;
+  }
+  saveWithHistory(cp, file, event, fromPhase);
+  process.stdout.write(`phase=${cp.phase} iteration=${cp.iteration}
+`);
+  return 0;
+}
 function parseArgs(rest, known) {
   const values = /* @__PURE__ */ new Map();
   const consumed = new Array(rest.length).fill(false);
@@ -319,7 +705,32 @@ function requiredFlag(values, name) {
 function rawFlag(values, name) {
   return values.get(name);
 }
+function parseIntFlag(values, name, fallback) {
+  const raw = rawFlag(values, name);
+  if (raw === void 0) {
+    return fallback;
+  }
+  const parsed = pyParseInt(raw);
+  if (parsed === null) {
+    process.stderr.write(`error: argument ${name}: invalid int value: '${raw}'
+`);
+    return null;
+  }
+  return parsed;
+}
 async function main(argv, deps = {}) {
+  try {
+    return await dispatch(argv, deps);
+  } catch (exc) {
+    if (exc instanceof InvalidTransition) {
+      process.stderr.write(`error: ${exc.message}
+`);
+      return 2;
+    }
+    throw exc;
+  }
+}
+async function dispatch(argv, deps) {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === void 0 || !TS_COMMANDS.includes(cmd)) {
@@ -357,6 +768,33 @@ async function main(argv, deps = {}) {
     }
     return cmdUnitsStatus(file);
   }
+  if (cmd === "event") {
+    const { values, unknown } = parseArgs(rest, ["--file", "--event", "--max", "--finish-mode"]);
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = requiredFlag(values, "--file");
+    const event = requiredFlag(values, "--event");
+    if (file === void 0 || event === void 0) {
+      process.stderr.write("event requires --file and --event\n");
+      return 2;
+    }
+    const max = parseIntFlag(values, "--max", DEFAULT_MAX_ITERATIONS);
+    if (max === null) {
+      return 2;
+    }
+    const finishMode = rawFlag(values, "--finish-mode") ?? null;
+    if (finishMode !== null && finishMode !== "merge" && finishMode !== "pr") {
+      process.stderr.write(
+        `error: argument --finish-mode: invalid choice: '${finishMode}' (choose from 'merge', 'pr')
+`
+      );
+      return 2;
+    }
+    return cmdEvent(file, event, max, finishMode);
+  }
   if (cmd === "model") {
     const { values, unknown } = parseArgs(rest, ["--stage", "--config"]);
     if (unknown.length > 0) {
@@ -386,7 +824,7 @@ function samePath(a, b) {
   return canon(a) === canon(b);
 }
 var invokedPath = process.argv[1];
-if (invokedPath !== void 0 && samePath(invokedPath, fileURLToPath(import.meta.url))) {
+if (invokedPath !== void 0 && samePath(invokedPath, fileURLToPath2(import.meta.url))) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
