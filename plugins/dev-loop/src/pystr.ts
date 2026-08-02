@@ -26,9 +26,32 @@ export function pySplitlines(s: string): string[] {
   return parts;
 }
 
-// Python 的 int() 在轉換前剝掉的空白集合。實測(逐一把 c + "12" + c 餵給 int()):
-// 它剝掉 str.isspace() 為真的字元,唯獨 \x1c-\x1f 這四個例外——它們 isspace()
-// 為真,int() 卻拒絕。
+// Python `str.strip()`(不給引數)剝掉的字元集 = 所有 str.isspace() 為真的
+// 字元。實測列舉全部 0x110000 個 codepoint 得到 29 個:
+//   09 0a 0b 0c 0d 1c 1d 1e 1f 20 85 a0 1680 2000-200a 2028 2029 202f 205f 3000
+// 注意 U+FEFF(BOM)**不在**裡面——JS 的 trim() 卻會剝它。
+const PY_STR_WS = "\\t\\n\\v\\f\\r\\x1c\\x1d\\x1e\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const PY_STR_STRIP = new RegExp(`^[${PY_STR_WS}]+|[${PY_STR_WS}]+$`, "g");
+
+/**
+ * Python `str.strip()`(無引數)。
+ *
+ * 和 JS 的 `trim()` 兩邊各差一組,而且方向相反(實測):
+ *   `"\x1c12".strip()` == `"12"`,而 `"\x1c12".trim()` 原樣不動
+ *   `"\ufeff12".strip()` == `"\ufeff12"`,而 `"\ufeff12".trim()` == `"12"`
+ * 這個差在 pid 檔上會咬人:帶 \x1c 前綴的 watcher.pid 在 Python 是合法的活
+ * pid,用 trim() 的 TS 會判成 "absent" —— 然後 disarmWatcher 把 pid 檔刪掉,
+ * 而 watcher 還活著,從此再也找不到、殺不掉。
+ */
+export function pyStrip(s: string): string {
+  return s.replace(PY_STR_STRIP, "");
+}
+
+// Python 的 int() 在轉換前**自己**剝掉的空白集合。實測(逐一把 c + "12" + c
+// 餵給 int()):它剝掉 str.isspace() 為真的字元,唯獨 \x1c-\x1f 這四個例外——
+// 它們 isspace() 為真(所以 str.strip() 會剝),int() 卻拒絕。也就是
+// PY_INT_WS === PY_STR_WS 去掉 \x1c-\x1f;`int(s.strip())` 與 `int(s)` 因此
+// 不等價,呼叫端 Python 寫哪個就得照著寫哪個。
 //
 // 不能直接用 JS 的 trim():兩邊各差一個,而且方向相反(實測)——
 //   "\x85" + "12"   → Python int() == 12,JS trim() 不剝(會被誤判成非法)

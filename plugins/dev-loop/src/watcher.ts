@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_HEARTBEAT } from "./adapter.js";
 import { loadCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { loadConfig } from "./config.js";
-import { pyParseInt, pySplitlines } from "./pystr.js";
+import { pyTruthy } from "./jsonio.js";
+import { pyParseInt, pySplitlines, pyStrip } from "./pystr.js";
 import { shlexJoin, shlexSplit } from "./shlex.js";
 
 export type WatcherState = "running" | "dead" | "absent";
@@ -64,7 +65,12 @@ export function watcherState(checkpointPath: string): [WatcherState, number | nu
   if (!existsSync(pidPath)) {
     return ["absent", null];
   }
-  const pid = pyParseInt(readFileSync(pidPath, "utf-8"));
+  // Python 是 `int(pid_path.read_text().strip())` —— strip() 在前、int() 在後,
+  // 兩個各自剝掉的空白集合不一樣(str.strip() 剝 \x1c-\x1f,int() 不剝),所以
+  // 必須照著組合,不能只叫 pyParseInt。實測 watcher.pid 內容 "\x1c<活著的 pid>":
+  //   PY  _watcher_state -> ('running', <pid>)
+  //   TS(修前)          -> ["absent", null]
+  const pid = pyParseInt(pyStrip(readFileSync(pidPath, "utf-8")));
   if (pid === null) {
     return ["absent", null];
   }
@@ -121,9 +127,16 @@ export function ensureArmed(
   const heartbeat = opts.heartbeat ?? DEFAULT_HEARTBEAT;
   const cp = loadCheckpoint(checkpointPath);
   // Python: exec_str = exec_override or cp.resume_exec —— `or` 不是 `??`,
-  // 空字串的 override 要讓位給 checkpoint 裡的值。
-  const execStr = opts.execOverride || cp.resume_exec;
-  if (!execStr) {
+  // 空字串的 override 要讓位給 checkpoint 裡的值。而「falsy」是 Python 的
+  // falsy,不是 JS 的:loadCheckpoint 完全不做型別收斂,resume_exec 帶的是
+  // 磁碟上 JSON 的原樣,`[]` / `{}` 在 Python 是 falsy、在 JS 是 truthy。
+  // 實測 checkpoint {"resume_exec": []}:
+  //   PY  ensure_armed -> ('skipped', None)
+  //   TS(修前)        -> ["armed", <pid>],而且真的留下一個 detached 行程
+  // 這與 config.ts 對 auto_arm 用 pyTruthy 擋下的是同一個坑。
+  const override: unknown = opts.execOverride;
+  const execStr: unknown = pyTruthy(override) ? override : (cp.resume_exec as unknown);
+  if (!pyTruthy(execStr)) {
     return ["skipped", null];
   }
   const [state, pid] = watcherState(checkpointPath);
@@ -131,7 +144,9 @@ export function ensureArmed(
     return ["already", pid];
   }
   const newPid = spawnWatcher(
-    shlexSplit(execStr), heartbeat, watcherLogPath(checkpointPath));
+    // 非字串但 truthy 的 resume_exec(例如 [0])在 Python 是 shlex.split 拋
+    // AttributeError;那條路徑另案記錄,這裡不改變它的現況。
+    shlexSplit(execStr as string), heartbeat, watcherLogPath(checkpointPath));
   const pidPath = watcherPidPath(checkpointPath);
   mkdirSync(dirname(pidPath), { recursive: true });
   writeFileSync(pidPath, String(newPid), "utf-8");
@@ -151,7 +166,10 @@ export function lastWatcherAttempt(checkpointPath: string): unknown {
   }
   let last: unknown = null;
   for (const raw of pySplitlines(readFileSync(log, "utf-8"))) {
-    const line = raw.trim();
+    // Python 是 `line.strip()`,不是 trim():兩者的空白集合各差一組。實測
+    // 一行 "\x1f{\"n\": 1}" → PY {'n': 1} / TS(修前) null;
+    // 一行 "\ufeff{\"n\": 1}" → PY None / TS(修前) {"n": 1}。
+    const line = pyStrip(raw);
     if (!line) {
       continue;
     }
@@ -170,7 +188,10 @@ export function lastWatcherAttempt(checkpointPath: string): unknown {
  * auto-arm 失敗不該讓已經成功的主命令變成失敗。
  */
 export function ensureArmedAfterSave(cp: Checkpoint, file: string): void {
-  if (!cp.resume_exec) {
+  // 同 ensureArmed:resume_exec 沒有經過任何型別收斂,`[]` / `{}` 在 Python
+  // 是 falsy(實測 _ensure_armed_after_save 對 resume_exec=[] 不 arm),
+  // 在 JS 是 truthy。
+  if (!pyTruthy(cp.resume_exec)) {
     return;
   }
   if (cp.phase === "done") {

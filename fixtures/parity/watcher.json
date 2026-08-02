@@ -23,7 +23,19 @@
       "expect": { "state": "running", "pid": "<SELF>" } },
     { "name": "a reaped pid",
       "input": { "pid_file": "<DEAD>" },
-      "expect": { "state": "dead", "pid": "<DEAD>" } }
+      "expect": { "state": "dead", "pid": "<DEAD>" } },
+    { "name": "a pid prefixed by a file separator, which str.strip() removes but int() would reject",
+      "input": { "pid_file": "\u001c<SELF>" },
+      "expect": { "state": "running", "pid": "<SELF>" } },
+    { "name": "a pid wrapped in a unit separator and a record separator, stripped at both ends",
+      "input": { "pid_file": "\u001f<SELF>\u001e" },
+      "expect": { "state": "running", "pid": "<SELF>" } },
+    { "name": "a pid prefixed by a BOM, which str.strip() does not remove",
+      "input": { "pid_file": "\ufeff<SELF>" },
+      "expect": { "state": "absent", "pid": null } },
+    { "name": "a pid prefixed by NEL, which both str.strip() and int() remove",
+      "input": { "pid_file": "\u0085<SELF>" },
+      "expect": { "state": "running", "pid": "<SELF>" } }
   ],
   "lastWatcherAttempt": [
     { "name": "no log file",
@@ -52,6 +64,15 @@
       "expect": { "value": { "n": 3 } } },
     { "name": "a log with no trailing newline still yields its last line",
       "input": { "log": "{\"n\": 9}" },
-      "expect": { "value": { "n": 9 } } }
+      "expect": { "value": { "n": 9 } } },
+    { "name": "a line prefixed by a unit separator, which str.strip() removes",
+      "input": { "log": "\u001f{\"n\": 1}\n" },
+      "expect": { "value": { "n": 1 } } },
+    { "name": "a line prefixed by a BOM, which str.strip() does not remove, so the line is unparseable",
+      "input": { "log": "\ufeff{\"n\": 1}\n" },
+      "expect": { "value": null } },
+    { "name": "a line that is nothing but a unit separator is blank after strip and skipped",
+      "input": { "log": "{\"n\": 1}\n\u001f\n" },
+      "expect": { "value": { "n": 1 } } }
   ]
 }

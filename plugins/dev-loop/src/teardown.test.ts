@@ -46,6 +46,42 @@ describe("disarmWatcher", () => {
     expect(process.kill(child.pid as number, 0)).toBe(true);
     child.kill("SIGKILL");
   });
+  it("still kills a pid whose file has a control-char prefix that str.strip() removes", async () => {
+    // Python 是 int(read_text().strip());str.strip() 剝 \x1c-\x1f,int() 不剝,
+    // 所以只叫 pyParseInt 會判成非法。實測 watcher.pid 內容 "\x1c<活著的 pid>":
+    //   PY disarm_watcher -> 'killed',子行程真的死了,pid 檔刪掉
+    //   TS(修前)         -> 'absent',子行程還活著,pid 檔照樣被刪掉
+    //                        —— watcher 從此找不到也殺不掉
+    const d = devloopDir();
+    const child = spawn("sleep", ["30"]);
+    await new Promise<void>((ok, bad) => {
+      child.once("spawn", () => ok());
+      child.once("error", bad);
+    });
+    const pid = join(d, "watcher.pid");
+    writeFileSync(pid, `\x1c${child.pid}`, "utf-8");
+    expect(disarmWatcher(join(d, "checkpoint.json"))).toBe("killed");
+    expect(existsSync(pid)).toBe(false);
+    const exit = await new Promise<{ signal: string | null }>((ok) => {
+      child.once("exit", (_code, signal) => ok({ signal }));
+    });
+    expect(exit.signal).toBe("SIGTERM");
+  });
+  it("does not strip a BOM, which Python's str.strip() also leaves in place", async () => {
+    // 反方向:JS 的 trim() 會剝 U+FEFF,Python 的 strip() 不會。實測
+    // watcher.pid 內容 "\ufeff<活著的 pid>":PY -> 'absent',子行程活著。
+    const d = devloopDir();
+    const child = spawn("sleep", ["30"]);
+    await new Promise<void>((ok, bad) => {
+      child.once("spawn", () => ok());
+      child.once("error", bad);
+    });
+    const pid = join(d, "watcher.pid");
+    writeFileSync(pid, `\ufeff${child.pid}`, "utf-8");
+    expect(disarmWatcher(join(d, "checkpoint.json"))).toBe("absent");
+    expect(process.kill(child.pid as number, 0)).toBe(true);
+    child.kill("SIGKILL");
+  });
   it("treats a dead pid as absent and still removes the file", () => {
     const d = devloopDir();
     const pid = join(d, "watcher.pid");

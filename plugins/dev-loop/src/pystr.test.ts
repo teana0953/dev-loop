@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pySplitlines, pyParseInt } from "./pystr.js";
+import { pySplitlines, pyParseInt, pyStrip } from "./pystr.js";
 
 describe("pySplitlines", () => {
   // 實測 Python 3.14.5(值抄自實跑,不是從 TS 反推):
@@ -35,6 +35,33 @@ describe("pySplitlines", () => {
     expect(pySplitlines("a\n\nb")).toEqual(["a", "", "b"]);
     // 只丟掉「一個」尾端空片段:'a\n\n' -> ['a', '']
     expect(pySplitlines("a\n\n")).toEqual(["a", ""]);
+  });
+});
+
+describe("pyStrip", () => {
+  // 實測 Python:列舉全部 codepoint,`c.strip() == ""` 的恰好 29 個——
+  //   09 0a 0b 0c 0d 1c 1d 1e 1f 20 85 a0 1680 2000-200a 2028 2029 202f 205f 3000
+  // JS 的 trim() 與它兩邊各差一組,方向相反。
+  it("strips the control separators \\x1c-\\x1f that JS trim() leaves alone", () => {
+    expect(pyStrip("\x1c12")).toBe("12");
+    expect(pyStrip("\x1d12\x1e")).toBe("12");
+    expect(pyStrip("\x1f12\x1f")).toBe("12");
+    // 對照:同一組輸入 trim() 原樣不動。
+    expect("\x1c12".trim()).toBe("\x1c12");
+  });
+
+  it("does not strip the BOM that JS trim() does strip", () => {
+    // Python: '\ufeff12'.strip() == '\ufeff12'
+    expect(pyStrip("\ufeff12")).toBe("\ufeff12");
+    expect("\ufeff12".trim()).toBe("12");
+  });
+
+  it("strips the ordinary whitespace both agree on", () => {
+    expect(pyStrip("  12\n")).toBe("12");
+    expect(pyStrip("\x8512\xa0")).toBe("12");
+    expect(pyStrip("\u300012 ")).toBe("12");
+    expect(pyStrip("")).toBe("");
+    expect(pyStrip("\x1c\x1f \n")).toBe("");
   });
 });
 

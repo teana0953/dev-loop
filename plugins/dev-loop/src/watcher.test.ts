@@ -81,6 +81,31 @@ describe("ensureArmed", () => {
     expect(ensureArmed(fixture())).toEqual(["skipped", null]);
   });
 
+  it("treats an empty container resume_exec as no resume command, the way Python does", () => {
+    // loadCheckpoint 不做任何型別收斂,resume_exec 帶的是磁碟 JSON 的原樣。
+    // `[]` / `{}` 在 Python 是 falsy、在 JS 是 truthy。實測 checkpoint
+    // {"phase":"apply","change_id":"c","branch":"b","resume_exec":[]}:
+    //   PY  watcher.ensure_armed(...) -> ('skipped', None)
+    //   TS(修前)                     -> ["armed", <pid>],並留下 detached 行程
+    for (const empty of [[], {}] as unknown[]) {
+      const file = fixture({ resume_exec: empty });
+      expect(ensureArmed(file, { heartbeat: 1 })).toEqual(["skipped", null]);
+      // 沒 spawn 就不會有 pid 檔——這條才真的證明「沒留下行程」。
+      expect(existsSync(watcherPidPath(file)), "不得 spawn").toBe(false);
+    }
+  });
+
+  it("treats an empty container exec override as absent, the way Python's `or` does", () => {
+    // Python 的 `exec_override or cp.resume_exec` 用的是 Python 的 falsy。
+    // checkpoint 也沒有值,所以正確結果是 skipped;`||` 的版本會認為 []
+    // 是 truthy,於是拿 [] 去 shlex.split 並真的 spawn 一個 watcher。
+    const file = fixture();
+    expect(
+      ensureArmed(file, { heartbeat: 1, execOverride: [] as unknown as string }),
+    ).toEqual(["skipped", null]);
+    expect(existsSync(watcherPidPath(file)), "不得 spawn").toBe(false);
+  });
+
   it("really spawns a detached watcher, writes its pid, and is idempotent", async () => {
     // --exec 用 /usr/bin/true:watcher 第一次嘗試就 exit 0 並自行結束,
     // 測試不會留下孤兒行程(最後一條斷言驗證這件事)。
@@ -177,6 +202,38 @@ describe("ensureArmedAfterSave", () => {
     );
     expect(existsSync(watcherPidPath(off))).toBe(false);
   });
+
+  it("treats an empty container resume_exec as no resume command", async () => {
+    // 這個閘門看的是**傳進來的 cp 物件**,而 ensureArmed 之後是從磁碟重讀。
+    // 所以磁碟上放一個真的 resume_exec、cp 物件放 []:閘門正確時什麼都不做,
+    // 閘門用 JS 的 falsy 時 [] 是 truthy、會放行,ensureArmed 從磁碟讀到
+    // "/usr/bin/true" 就真的 spawn 了。實測 PY(同一組輸入):
+    //   cp 物件 resume_exec=[]              -> watcher.pid exists: False
+    //   cp 物件 resume_exec={}              -> watcher.pid exists: False
+    //   cp 物件 resume_exec="/usr/bin/true" -> watcher.pid exists: True
+    for (const empty of [[], {}] as unknown[]) {
+      const file = fixture({ resume_exec: "/usr/bin/true" });
+      ensureArmedAfterSave(
+        makeCheckpoint({
+          phase: "apply", change_id: "c", branch: "b",
+          resume_exec: empty as unknown as string,
+        }),
+        file,
+      );
+      expect(existsSync(watcherPidPath(file)), "不得 spawn").toBe(false);
+    }
+
+    // 對照組:cp 物件帶真的字串時,同一條路徑必須真的 arm——否則把整個
+    // 閘門改成無條件 return 也不會有測試變紅。
+    const armed = fixture({ resume_exec: "/usr/bin/true" });
+    ensureArmedAfterSave(
+      makeCheckpoint({ phase: "apply", change_id: "c", branch: "b", resume_exec: "/usr/bin/true" }),
+      armed,
+    );
+    expect(existsSync(watcherPidPath(armed))).toBe(true);
+    const pid = Number(readFileSync(watcherPidPath(armed), "utf-8"));
+    await waitFor(() => !pidAlive(pid));
+  }, 30000);
 
   it("does arm when nothing holds it back (the positive half of the gate)", async () => {
     // 三條早退各自都要有「不早退時真的會 arm」當對照,否則把任一條改成
