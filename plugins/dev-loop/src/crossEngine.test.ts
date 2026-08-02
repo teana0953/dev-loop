@@ -558,6 +558,36 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       },
     },
     {
+      // 陣列是唯一能考出 pyDictGet 的 `Array.isArray` 那一半的輸入
+      // (`typeof ["a"] === "object"`);`42` 只考到 typeof 那一半。
+      name: "a log line that is a JSON array",
+      build: (dir) => {
+        const file = writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        });
+        writeFileSync(join(dir, "watcher-log.jsonl"), '["a"]\n', "utf-8");
+        return ["watcher-status", "--file", file];
+      },
+    },
+    {
+      // output_tail 的 .strip() 是 Python 的空白集合:\x1c 要剝、BOM 要留。
+      name: "an output tail padded with separators Python strips and a BOM it keeps",
+      build: (dir) => {
+        const file = writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        });
+        writeFileSync(
+          join(dir, "watcher-log.jsonl"),
+          JSON.stringify({
+            ts: "T", exit_code: 0, action: "stop",
+            output_tail: "\x1c﻿boom﻿\x1c",
+          }) + "\n",
+          "utf-8",
+        );
+        return ["watcher-status", "--file", file];
+      },
+    },
+    {
       // Python 的 bool([]) 是 False:resume_exec 印 "(none)"、exit 0。
       name: "an empty-container resume_exec counts as absent",
       build: (dir) => [
@@ -645,9 +675,12 @@ describe("cross-engine command matrix (I7)", () => {
         // 會讓第二個引擎看到第一個引擎改過的狀態,比出來的差異全是假的。
         const dirTs = mkdtempSync(join(tmpdir(), "cross-engine-ts-"));
         const dirPy = mkdtempSync(join(tmpdir(), "cross-engine-py-"));
+        // **註冊在跑之前**:一個掛住或拋錯的 row 根本走不到 run 之後那行,
+        // afterAll 於是什麼都檢查不到——leak guard 只在不需要它的時候有效。
+        // pid 檔還不存在也沒關係,afterAll 自己會跳過不存在的檔。
+        spawnedPidFiles.push(join(dirTs, "watcher.pid"), join(dirPy, "watcher.pid"));
         const ts = runTs(c.build(dirTs));
         const py = runPy(c.build(dirPy));
-        spawnedPidFiles.push(join(dirTs, "watcher.pid"), join(dirPy, "watcher.pid"));
         const norm = (s: string, dir: string): string => {
           const withoutDir = s.split(dir).join("<DIR>");
           return c.normalize ? c.normalize(withoutDir) : withoutDir;
@@ -657,5 +690,69 @@ describe("cross-engine command matrix (I7)", () => {
           .toBe(norm(py.stdout, dirPy));
       });
     }
+  }
+});
+
+/**
+ * arm-local 的 idempotent 保證,兩個引擎都要成立。
+ *
+ * 矩陣的 arm-local 列用 `--exec /usr/bin/true`,那正是**掩蓋**這個 bug 的值:
+ * watcher 立刻結束,所以「第一次呼叫要等到 watcher 死掉才返回」不影響第二次
+ * 看到的狀態。要看見它,續跑命令必須活得夠久,而且呼叫端必須真的在讀 stdout
+ * (spawnSync 的 encoding 就是在讀 pipe)。實測 resume_exec "/bin/sh -c 'sleep 6'":
+ *   修前 PY:['watcher armed', 'watcher armed'],12 秒,留下兩個 watcher
+ *   TS    :['watcher armed', 'watcher already running'],0 秒
+ * 修法在 Python 那側(devloop/watcher.py 的 Popen 改接 DEVNULL),因為錯的是
+ * Python:規格說 ensure_armed 是 idempotent,mixed Python/TS 狀態才安全。
+ */
+describe("arm-local is idempotent on both engines, even with a long-running resume command", () => {
+  const LIVE_EXEC = "/bin/sh -c 'sleep 30'";
+
+  function killGroup(pidPath: string): void {
+    if (!existsSync(pidPath)) {
+      return;
+    }
+    const pid = Number(readFileSync(pidPath, "utf-8").trim());
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return;
+    }
+    // 整個 process group 一起收:watcher 是 group leader(detached /
+    // start_new_session),底下那個 sleep 30 才不會活到測試之後。
+    for (const target of [-pid, pid]) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch {
+        // 已經走了
+      }
+    }
+  }
+
+  for (const [engine, run] of [["TS", runTs], ["PY", runPy]] as const) {
+    it(`${engine}: reports armed then already, and returns immediately`, () => {
+      const dir = mkdtempSync(join(tmpdir(), `cross-engine-arm-${engine}-`));
+      const file = writeCheckpoint(dir, {
+        phase: "apply", change_id: "c1", branch: "b", resume_exec: LIVE_EXEC,
+      });
+      const pidPath = join(dir, "watcher.pid");
+      spawnedPidFiles.push(pidPath);
+      try {
+        const started = Date.now();
+        const first = run(["arm-local", "--file", file, "--heartbeat", "1"]);
+        const second = run(["arm-local", "--file", file, "--heartbeat", "1"]);
+        const elapsed = Date.now() - started;
+        expect(first.exit_code, `${engine}: first exit`).toBe(0);
+        expect(second.exit_code, `${engine}: second exit`).toBe(0);
+        expect(first.stdout.replace(/pid=\d+/, "pid=<PID>"))
+          .toBe("watcher armed (pid=<PID>)\n");
+        expect(second.stdout.replace(/pid=\d+/, "pid=<PID>"))
+          .toBe("watcher already running (pid=<PID>)\n");
+        // 門檻取得很寬(sleep 30 vs. 10 秒):正常路徑不到一秒,回歸則會卡在
+        // 續跑命令的長度上。ENGINE_TIMEOUT_MS 保證它不會無限期掛住。
+        expect(elapsed, `${engine}: 兩次 arm-local 花了 ${String(elapsed)}ms`)
+          .toBeLessThan(10_000);
+      } finally {
+        killGroup(pidPath);
+      }
+    });
   }
 });

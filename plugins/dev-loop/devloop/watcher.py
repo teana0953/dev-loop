@@ -31,7 +31,24 @@ def _pid_alive(pid):
 
 
 def _spawn_watcher(exec_command, heartbeat, log_path=None):
-    """spawn 一個 detached 行程跑 watch 子命令,回傳其 PID。"""
+    """spawn 一個 detached 行程跑 watch 子命令,回傳其 PID。
+
+    三個標準串流一律接 DEVNULL,不繼承呼叫端的。**這不是整潔問題,是正確性
+    問題**:繼承的話,watcher 會一直握著呼叫端 stdout 的那一端,呼叫端只要
+    有人在讀那個 pipe(`$(devloop arm-local ...)`、subprocess 的
+    capture_output、SKILL 的 orchestration 都是),就要等到 watcher 自己結束
+    才拿得到輸出。實測 resume_exec="/bin/sh -c 'sleep 6'",各自捕捉 stdout 連
+    呼叫兩次 arm-local:
+      修前 PY:['watcher armed', 'watcher armed'],12 秒,spawn 了兩個 watcher
+      TS    :['watcher armed', 'watcher already running'],0 秒
+    也就是說 ensure_armed 的 idempotent 保證在 Python 這側是假的——第一次呼叫
+    要等到 watcher 死掉才返回,第二次自然看不到活著的 pid。TS 用
+    `stdio: "ignore"` 從一開始就沒有這個問題,所以這裡改的是 Python。
+
+    watcher 自己不印任何東西(run_watcher 不 print,續跑命令的輸出由
+    _default_run 以 capture_output=True 收進 watcher-log.jsonl),所以接 DEVNULL
+    不會遺失任何觀測資料。
+    """
     argv = [
         sys.executable, "-m", "devloop.cli", "watch",
         "--exec", shlex.join(exec_command),
@@ -43,7 +60,14 @@ def _spawn_watcher(exec_command, heartbeat, log_path=None):
     pythonpath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = pythonpath + (os.pathsep + existing if existing else "")
-    proc = subprocess.Popen(argv, start_new_session=True, env=env)
+    proc = subprocess.Popen(
+        argv,
+        start_new_session=True,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     return proc.pid
 
 

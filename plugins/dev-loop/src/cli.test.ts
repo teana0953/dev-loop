@@ -1599,6 +1599,52 @@ describe("watcher-status", () => {
     expect(printed).not.toContain("last attempt:");
   });
 
+  it("propagates for a JSON array log line, which typeof calls an object", async () => {
+    // `42` 只考到 pyDictGet 的 `typeof !== "object"` 那一半;陣列是唯一能把
+    // `Array.isArray` 那一半考出來的輸入(`typeof ["a"] === "object"`)。實測:
+    //   PY -> 前兩行照印,然後 AttributeError: 'list' object has no attribute
+    //         'get',exit 1
+    //   TS(拿掉 Array.isArray)-> 印 "last attempt: ? exit=?" 然後繼續
+    const file = fixture({ resume_exec: "/usr/bin/true" }, { log: '["a"]\n' });
+    const out = capture("stdout");
+    const exc = await expectRejects(
+      main(["watcher-status", "--file", file]), "array log line");
+    const printed = out.text();
+    out.restore();
+    expect((exc as Error).message).toContain("has no attribute 'get'");
+    expect(printed).toContain("resume_exec: /usr/bin/true\n");
+    expect(printed).not.toContain("last attempt:");
+  });
+
+  it("strips the output tail with Python's whitespace set, not trim()", async () => {
+    // 實測:
+    //   output_tail "\x1cboom\x1c" -> PY "output tail: boom"(剝掉分隔符)
+    //   output_tail "﻿boom﻿"       -> PY "output tail: ﻿boom﻿"(BOM 留著)
+    // JS 的 trim() 兩條都給相反的答案。這是 attempt 那行的 pyRstrip 的姊妹,
+    // 少了這條就只有其中一邊被釘住。
+    const sep = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({
+        ts: "T", exit_code: 0, action: "stop", output_tail: "\x1cboom\x1c",
+      }) + "\n",
+    });
+    const out = capture("stdout");
+    await main(["watcher-status", "--file", sep]);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain("output tail: boom\n");
+
+    const bom = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({
+        ts: "T", exit_code: 0, action: "stop", output_tail: "﻿boom﻿",
+      }) + "\n",
+    });
+    const out2 = capture("stdout");
+    await main(["watcher-status", "--file", bom]);
+    const printed2 = out2.text();
+    out2.restore();
+    expect(printed2).toContain("output tail: ﻿boom﻿\n");
+  });
+
   it("propagates when output_tail is truthy but not a string", async () => {
     // 實測 {"output_tail": 5}:PY 印完 "last attempt: ..." 那行之後
     // AttributeError: 'int' object has no attribute 'strip',exit 1。

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pySplitlines, pyParseInt, pyStrip } from "./pystr.js";
+import { pySplitlines, pyParseInt, pyStrip, pyRstrip } from "./pystr.js";
 
 describe("pySplitlines", () => {
   // 實測 Python 3.14.5(值抄自實跑,不是從 TS 反推):
@@ -62,6 +62,38 @@ describe("pyStrip", () => {
     expect(pyStrip("\u300012 ")).toBe("12");
     expect(pyStrip("")).toBe("");
     expect(pyStrip("\x1c\x1f \n")).toBe("");
+  });
+});
+
+/**
+ * `pyRstrip` 是 `str.rstrip()`(無引數)。與 `pyStrip` 同一組空白定義,只剝右邊。
+ * 實測 Python 3.14:
+ *   'a\x1c'.rstrip()      == 'a'          而 'a\x1c'.replace(/\s+$/,'')  == 'a\x1c'
+ *   'a\ufeff'.rstrip()    == 'a\ufeff'    而 JS 的 /\s+$/ 會把 BOM 剝掉
+ *   '\x1ca'.rstrip()      == '\x1ca'      左邊一律不動
+ */
+describe("pyRstrip", () => {
+  it("strips the control separators JS's \\s does not", () => {
+    expect(pyRstrip("a\x1c")).toBe("a");
+    expect(pyRstrip("a\x1d\x1e\x1f")).toBe("a");
+    expect("a\x1c".replace(/\s+$/, "")).toBe("a\x1c");
+  });
+
+  it("keeps the BOM that JS's \\s strips", () => {
+    expect(pyRstrip("a\ufeff")).toBe("a\ufeff");
+    expect("a\ufeff".replace(/\s+$/, "")).toBe("a");
+  });
+
+  it("leaves the left-hand side alone", () => {
+    expect(pyRstrip("\x1ca")).toBe("\x1ca");
+    expect(pyRstrip("  a  ")).toBe("  a");
+  });
+
+  it("strips the ordinary whitespace both agree on", () => {
+    expect(pyRstrip("a \n")).toBe("a");
+    expect(pyRstrip("a\xa0\u3000")).toBe("a");
+    expect(pyRstrip("")).toBe("");
+    expect(pyRstrip(" \x1c\n")).toBe("");
   });
 });
 

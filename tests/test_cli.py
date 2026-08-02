@@ -1,5 +1,7 @@
 import os
+import signal
 import subprocess
+import sys
 
 import pytest
 
@@ -546,6 +548,73 @@ def test_spawn_watcher_sets_pythonpath_to_engine_root(monkeypatch):
     assert pp[0] == engine_root
     assert os.path.exists(os.path.join(engine_root, "devloop", "__init__.py"))
     assert "/pre/existing" in pp
+
+
+def test_spawn_watcher_does_not_inherit_the_callers_streams():
+    # 結構性斷言:三個標準串流都必須接 DEVNULL。繼承 stdout 的話,呼叫端只要
+    # 在讀那個 pipe 就要等到 watcher 死掉才拿得到輸出——見下面那條端對端測試
+    # 量到的 12 秒。這條走 Popen 攔截,不 spawn 真的行程,所以它是即時的。
+    captured = {}
+
+    class _FakeProc:
+        pid = 4321
+
+    def _fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        return _FakeProc()
+
+    import unittest.mock as _mock
+    with _mock.patch.object(watcher.subprocess, "Popen", _fake_popen):
+        watcher._spawn_watcher(["echo", "hi"], 1800)
+
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.DEVNULL
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
+def test_arm_local_returns_before_the_watcher_finishes(tmp_path):
+    """arm-local 必須立刻返回,且第二次呼叫看得到活著的 watcher。
+
+    端對端(真的 spawn),因為這個 bug 只在「呼叫端捕捉 stdout」時才看得到:
+    subprocess.run(capture_output=True) 會等到 pipe 的**所有**寫端關閉,而
+    detached watcher 若繼承了 stdout 就是其中一個寫端。實測 resume_exec
+    ``/bin/sh -c 'sleep 6'``、各自捕捉輸出連呼叫兩次:
+      修前:['watcher armed', 'watcher armed'],12 秒,兩個 watcher
+      修後:['watcher armed', 'watcher already running'],0 秒,一個 watcher
+    也就是說 ensure_armed 的 idempotent 保證在修前是假的。
+
+    時間門檻取得很寬(sleep 60 vs. timeout 20):正常路徑用不到 1 秒,回歸則
+    必定撞到 timeout。TimeoutExpired 會讓測試紅,而不是永遠掛住。
+    """
+    f = tmp_path / ".devloop" / "cp.json"
+    Checkpoint(
+        phase="apply", change_id="c1", branch="b",
+        resume_exec="/bin/sh -c 'sleep 60'",
+    ).save(f)
+    env = dict(os.environ)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(watcher.__file__)))
+    env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    argv = [sys.executable, "-m", "devloop.cli", "arm-local", "--file", str(f), "--heartbeat", "1"]
+
+    try:
+        first = subprocess.run(argv, capture_output=True, text=True, timeout=20, env=env)
+        second = subprocess.run(argv, capture_output=True, text=True, timeout=20, env=env)
+        assert first.returncode == 0
+        assert first.stdout.startswith("watcher armed (pid=")
+        assert second.returncode == 0
+        assert second.stdout.startswith("watcher already running (pid=")
+    finally:
+        # 整個 process group 一起收(watcher 是 session leader),否則它底下那個
+        # sleep 60 會活到測試結束之後。
+        pid_file = f.parent / "watcher.pid"
+        if pid_file.exists():
+            pid = int(pid_file.read_text().strip())
+            for killer in (lambda: os.killpg(pid, signal.SIGKILL),
+                           lambda: os.kill(pid, signal.SIGKILL)):
+                try:
+                    killer()
+                except OSError:
+                    pass
 
 
 def test_ensure_armed_spawns_when_no_pidfile(tmp_path, monkeypatch, capsys):
