@@ -17,14 +17,17 @@ import {
   GATE_RETRY_EXCEEDED,
   DEFAULT_MAX_ITERATIONS,
 } from "./statemachine.js";
-import { ensureArmedAfterSave } from "./watcher.js";
-import { pyParseInt } from "./pystr.js";
+import {
+  ensureArmedAfterSave, ensureArmed, watcherState, lastWatcherAttempt,
+} from "./watcher.js";
+import { pyParseInt, pyRstrip, pyStrip } from "./pystr.js";
+import { DEFAULT_HEARTBEAT, runWatcher } from "./adapter.js";
 import { archiveChange } from "./openspec.js";
 import type { OpenSpecResult } from "./openspec.js";
 import { archiveWorkfiles as archiveWorkfilesReal } from "./housekeeping.js";
 import { pendingUnits, type Unit } from "./units.js";
 import { loadConfig, resolveModel, validateGateCmds } from "./config.js";
-import { pyIndex, pyTruthy } from "./jsonio.js";
+import { pyDictGet, pyIndex, pyTruthy } from "./jsonio.js";
 import { runGate } from "./gate.js";
 import { shlexSplit } from "./shlex.js";
 
@@ -43,7 +46,10 @@ import { shlexSplit } from "./shlex.js";
  * silent regressions. Status stays on Python until the `watcher` module is
  * ported (next milestone) and a full port can be done properly.
  */
-export const TS_COMMANDS = ["archive", "units-status", "model", "event", "gate"] as const;
+export const TS_COMMANDS = [
+  "archive", "units-status", "model", "event", "gate",
+  "watch", "arm-local", "watcher-status",
+] as const;
 
 export interface CliDeps {
   delegate: (argv: string[]) => number;
@@ -321,6 +327,109 @@ function cmdGate(
     return cp.phase === "escalated" ? 3 : 1;
   }
   process.stdout.write(`gate PASSED -> phase=${cp.phase} iteration=${cp.iteration}\n`);
+  return 0;
+}
+
+/**
+ * detached watcher 的本體:反覆跑續跑命令直到它回 0。
+ *
+ * `shlexSplit`,不是 `split(" ")`:resume_exec 的典型值是
+ * `claude -p '/dev-loop resume'`,用空白切會變成 ["claude","-p","'/dev-loop",
+ * "resume'"] —— watcher 每個 heartbeat 都跑一個壞掉的命令,而它是 detached、
+ * 沒人看 stdout,唯一的痕跡在 watcher-log.jsonl 裡。
+ *
+ * runWatcher 是 async(Node 沒有同步 sleep),所以這裡必須 await——直接
+ * `return runWatcher(...)` 會讓 main 的 Promise 早退,exit code 變成 undefined。
+ */
+async function cmdWatch(
+  execStr: string, heartbeat: number, log: string | null,
+): Promise<number> {
+  return await runWatcher(shlexSplit(execStr), {
+    heartbeat, logPath: log ?? undefined,
+  });
+}
+
+/**
+ * 手動 arm 一個本機 watcher(idempotent)。
+ *
+ * exit 2 = 沒有任何續跑命令可用(checkpoint.resume_exec 空且沒給 --exec);
+ * 0 = 剛 spawn 或本來就在。**`--exec` 對這支是 optional**(對 `watch` 才是
+ * required):arm-local 的常態是完全不帶 --exec、用 checkpoint 裡的值。
+ */
+function cmdArmLocal(file: string, execOverride: string | null, heartbeat: number): number {
+  const [status, info] = ensureArmed(file, { heartbeat, execOverride });
+  if (status === "skipped") {
+    process.stderr.write(
+      "error: no resume command (checkpoint.resume_exec empty and no --exec)\n");
+    return 2;
+  }
+  if (status === "already") {
+    process.stdout.write(`watcher already running (pid=${String(info)})\n`);
+    return 0;
+  }
+  process.stdout.write(`watcher armed (pid=${String(info)})\n`);
+  return 0;
+}
+
+/**
+ * watcher 排障一眼看:行程狀態、續跑命令、最近一次嘗試。
+ * exit 0 = 在位或不需要;exit 1 = 該在而不在(建議 arm-local)。
+ *
+ * 每一處的 Python 語意都不是能直譯的:
+ *  - `cp.resume_exec or "(none)"` 是 Python 的 `or`。實測 resume_exec=[]:
+ *      PY  印 "resume_exec: (none)"、exit 0(needed 為 False)
+ *      TS(用 `||`)-> `[]` 在 JS 是 truthy,印 "resume_exec: " 然後 exit 1
+ *    resume_exec=[0] 兩邊都 truthy,PY 印 "[0]"、`String([0])` 印 "0" —— 所以
+ *    連 `%s` 都要走 pyFormat。
+ *  - `line.rstrip()` 是 Python 的 rstrip(pyRstrip),`(...).strip()` 是
+ *    Python 的 strip(pyStrip);兩者與 JS 的 `\s`/`trim()` 各差一組空白。
+ *  - `last.get(...)` 對非 dict 會 AttributeError(pyDictGet)。
+ */
+function cmdWatcherStatus(file: string): number {
+  const cp = loadCheckpoint(file);
+  const [state, pid] = watcherState(file);
+  if (state === "running") {
+    process.stdout.write(`watcher: running (pid=${String(pid)})\n`);
+  } else if (state === "dead") {
+    process.stdout.write(`watcher: dead (stale pid=${String(pid)})\n`);
+  } else {
+    process.stdout.write("watcher: not armed\n");
+  }
+  const resume: unknown = cp.resume_exec;
+  process.stdout.write(
+    `resume_exec: ${pyFormat(pyTruthy(resume) ? resume : "(none)")}\n`);
+  const last = lastWatcherAttempt(file);
+  if (last === null) {
+    process.stdout.write("last attempt: (none)\n");
+  } else {
+    const line = `last attempt: ${pyFormat(pyDictGet(last, "ts", "?"))}`
+      + ` exit=${pyFormat(pyDictGet(last, "exit_code", "?"))}`
+      + ` ${pyFormat(pyDictGet(last, "action", ""))}`;
+    process.stdout.write(`${pyRstrip(line)}\n`);
+    // Python:`tail = (last.get("output_tail") or "").strip()` —— `or` 先把
+    // falsy(null / 0 / "")換成 "",**然後對留下來的東西呼叫 .strip()**。
+    // 非字串的 truthy 值(實測 output_tail=5)因此炸在 .strip() 上:
+    //   PY -> AttributeError: 'int' object has no attribute 'strip',exit 1,
+    //         而 "last attempt: ..." 那行已經印出去了
+    // 這裡照抄那個順序與那個「大聲失敗」,不是 String(x).trim()。
+    const rawTail: unknown = pyDictGet(last, "output_tail", null);
+    const tailSource: unknown = pyTruthy(rawTail) ? rawTail : "";
+    if (typeof tailSource !== "string") {
+      throw new TypeError(
+        "AttributeError: output_tail object has no attribute 'strip'"
+        + ` (got ${Array.isArray(tailSource) ? "array" : typeof tailSource})`);
+    }
+    const tail = pyStrip(tailSource);
+    if (tail) {
+      process.stdout.write(`output tail: ${tail}\n`);
+    }
+  }
+  // `bool(cp.resume_exec)`,不是 `Boolean(...)`:同上,`[]` 兩邊相反。
+  const needed = cp.phase !== "done" && pyTruthy(resume);
+  if (needed && state !== "running") {
+    process.stdout.write(`hint: devloop arm-local --file ${file}\n`);
+    return 1;
+  }
   return 0;
 }
 
@@ -697,6 +806,69 @@ async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number>
     // `--cmd` 是 argparse 的 action="append":每一次出現都要跑,所以讀 repeated
     // 而不是 values。values 的後蓋前會靜默少跑一條 gate 命令。
     return cmdGate(file, repeated.get("--cmd") ?? [], max, maxGate, timeout);
+  }
+  if (cmd === "watch") {
+    const { values, unknown, error } = parseArgs(rest, ["--exec", "--heartbeat", "--log"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    // `--exec` 對 watch 是 required(argparse required=True → exit 2),對
+    // arm-local 是 optional。寫反的話 watch 少了 --exec 會拿 undefined 去
+    // shlexSplit,arm-local 則再也不能用 checkpoint 裡的 resume_exec。
+    const execStr = rawFlag(values, "--exec");
+    if (execStr === undefined) {
+      process.stderr.write("error: the following arguments are required: --exec\n");
+      return 2;
+    }
+    const heartbeat = parseIntFlag(values, "--heartbeat", DEFAULT_HEARTBEAT);
+    if (heartbeat === null) {
+      return 2;
+    }
+    // argparse 的 default 是 None,不是 "":`--log` 沒給就完全不寫 log。
+    return await cmdWatch(execStr, heartbeat, rawFlag(values, "--log") ?? null);
+  }
+  if (cmd === "arm-local") {
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--exec", "--heartbeat"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === undefined) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    const heartbeat = parseIntFlag(values, "--heartbeat", DEFAULT_HEARTBEAT);
+    if (heartbeat === null) {
+      return 2;
+    }
+    return cmdArmLocal(file, rawFlag(values, "--exec") ?? null, heartbeat);
+  }
+  if (cmd === "watcher-status") {
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}\n`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}\n`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === undefined) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    return cmdWatcherStatus(file);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);

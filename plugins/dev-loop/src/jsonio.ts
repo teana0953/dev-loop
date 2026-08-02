@@ -60,6 +60,32 @@ export function pyTruthy(value: unknown): boolean {
 }
 
 /**
+ * Python 的 `obj.get(key, default)`,含「obj 不是 dict 就 AttributeError」那一半。
+ *
+ * `pyGet` 的參數已經是 Record,呼叫端保證過型別;這個版本用在「JSON 解出來
+ * 的東西可能是任何型別」的地方——`json.loads("42")` 是合法的,而對它呼叫
+ * .get 在 Python 會炸,靜默回 undefined 是分歧不是容錯。
+ *
+ * 實測 `watcher-status`,watcher-log.jsonl 最後一行分別是 `42` / `["a"]` /
+ * `"hi"`(其餘輸出略):
+ *   PY -> AttributeError: 'int'/'list'/'str' object has no attribute 'get',
+ *         exit 1,而且 "watcher: ..." 與 "resume_exec: ..." 兩行已經印出來了
+ *   TS(用 obj.ts)-> 印 "last attempt: ? exit=? " 然後 exit 0/1,壞掉的 log
+ *         被當成一筆內容不明的正常紀錄
+ * 也就是說字串會被擋下來(typeof "string" 不是 "object"),這是刻意的:
+ * Python 對 str 一樣沒有 .get。
+ */
+export function pyDictGet(obj: unknown, key: string, fallback: unknown): unknown {
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new TypeError(
+      `AttributeError: '${obj === null ? "NoneType" : typeof obj}' object has no attribute 'get'`);
+  }
+  return Object.prototype.hasOwnProperty.call(obj, key)
+    ? (obj as Record<string, unknown>)[key]
+    : fallback;
+}
+
+/**
  * Python `data[key]` parity: a missing key raises, it does not yield
  * `undefined`. `obj.k` / `obj["k"]` in TypeScript quietly produce
  * `undefined`, which then flows onward as an `undefined` id or a status that

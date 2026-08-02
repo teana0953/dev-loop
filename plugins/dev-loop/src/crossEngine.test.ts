@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,14 +37,27 @@ interface EngineResult {
   exit_code: number;
 }
 
+/**
+ * `watch` 進矩陣之後,被 spawn 的引擎可能是一個**不會自己結束**的重試迴圈
+ * (續跑命令永遠失敗時就是這樣,而那正是某些變異體的表現)。沒有上限的
+ * spawnSync 在那種情況下不是「這一列紅了」,是整支 suite 掛住並留下背景行程
+ * ——vitest 的 test timeout 不會殺掉 spawnSync 的子行程。所以兩個引擎一律
+ * 給同一個硬上限;正常的 case 都在數百毫秒內結束,離這個上限很遠。
+ */
+const ENGINE_TIMEOUT_MS = 20_000;
+
 function runTs(argv: string[]): EngineResult {
-  const proc = spawnSync("node", [CLI, ...argv], { encoding: "utf-8" });
+  const proc = spawnSync("node", [CLI, ...argv], {
+    encoding: "utf-8", timeout: ENGINE_TIMEOUT_MS, killSignal: "SIGKILL",
+  });
   return { stdout: proc.stdout ?? "", exit_code: proc.status ?? 1 };
 }
 
 function runPy(argv: string[]): EngineResult {
   const proc = spawnSync("python3", ["-m", "devloop.cli", ...argv], {
     encoding: "utf-8",
+    timeout: ENGINE_TIMEOUT_MS,
+    killSignal: "SIGKILL",
     env: { ...process.env, PYTHONPATH: PLUGIN_ROOT },
   });
   return { stdout: proc.stdout ?? "", exit_code: proc.status ?? 1 };
@@ -440,6 +453,121 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       ],
     },
   ],
+  watch: [
+    {
+      // /usr/bin/true 立刻回 0,watcher 跑一輪就結束——矩陣不會留下背景行程。
+      name: "an immediately successful exec",
+      build: (dir) => [
+        "watch", "--exec", "/usr/bin/true", "--heartbeat", "1",
+        "--log", join(dir, "w.jsonl"),
+      ],
+    },
+    {
+      // shlex 切法。執行檔本身也加引號:切錯時 head 是 `'/bin/sh'`,兩個引擎
+      // 都立刻 FileNotFoundError/ENOENT(exit 1),而不是進入「永遠失敗、每秒
+      // 重試」的無窮迴圈——後者會讓這一列掛住而不是變紅(實測 10 分鐘沒結束)。
+      name: "a quoted argument stays one argv element",
+      build: (dir) => [
+        "watch", "--exec", `'/bin/sh' -c 'printf x > ${join(dir, "marker")}'`,
+        "--heartbeat", "1",
+      ],
+    },
+    {
+      // PY:shlex.split("") -> [] -> run_watcher 對 cmd[0] IndexError,exit 1。
+      name: "an empty --exec dies instead of looping",
+      build: () => ["watch", "--exec", "", "--heartbeat", "1"],
+    },
+  ],
+  "arm-local": [
+    {
+      name: "arming a fresh checkpoint",
+      build: (dir) => [
+        "arm-local", "--file",
+        writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        }),
+        "--heartbeat", "1",
+      ],
+      // pid 每次都不同,而且兩個引擎必然不同。
+      normalize: (s) => s.replace(/pid=\d+/g, "pid=<PID>"),
+    },
+    {
+      name: "no resume command anywhere",
+      build: (dir) => [
+        "arm-local", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+      ],
+    },
+    {
+      // --exec 對 arm-local 是 optional(對 watch 才是 required)。
+      name: "--exec overrides an absent resume_exec",
+      build: (dir) => [
+        "arm-local", "--file",
+        writeCheckpoint(dir, { phase: "apply", change_id: "c1", branch: "b" }),
+        "--exec", "/usr/bin/true", "--heartbeat", "1",
+      ],
+      normalize: (s) => s.replace(/pid=\d+/g, "pid=<PID>"),
+    },
+  ],
+  "watcher-status": [
+    {
+      name: "a checkpoint that needs a watcher and has none",
+      build: (dir) => [
+        "watcher-status", "--file",
+        writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        }),
+      ],
+    },
+    {
+      name: "the done phase needs no watcher",
+      build: (dir) => [
+        "watcher-status", "--file",
+        writeCheckpoint(dir, {
+          phase: "done", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        }),
+      ],
+    },
+    {
+      name: "a log with one recorded attempt",
+      build: (dir) => {
+        const file = writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        });
+        writeFileSync(
+          join(dir, "watcher-log.jsonl"),
+          JSON.stringify({
+            ts: "2026-08-02T00:00:00Z", exit_code: 1,
+            output_tail: "boom", action: "retry", heartbeat: 1,
+          }) + "\n",
+          "utf-8",
+        );
+        return ["watcher-status", "--file", file];
+      },
+    },
+    {
+      // 壞掉的 log(最後一行是純量)兩邊都要當場炸,不是印 "?" 繼續。
+      // stdout 比對因此也涵蓋「炸之前印了哪幾行」。
+      name: "a log line that is a bare scalar",
+      build: (dir) => {
+        const file = writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: "/usr/bin/true",
+        });
+        writeFileSync(join(dir, "watcher-log.jsonl"), "42\n", "utf-8");
+        return ["watcher-status", "--file", file];
+      },
+    },
+    {
+      // Python 的 bool([]) 是 False:resume_exec 印 "(none)"、exit 0。
+      name: "an empty-container resume_exec counts as absent",
+      build: (dir) => [
+        "watcher-status", "--file",
+        writeCheckpoint(dir, {
+          phase: "apply", change_id: "c1", branch: "b", resume_exec: [],
+        }),
+      ],
+    },
+  ],
   archive: [
     {
       name: "archive fails identically for a nonexistent openspec change",
@@ -453,6 +581,50 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
     },
   ],
 };
+
+/**
+ * arm-local 的矩陣列會在**兩個引擎**各 spawn 一個真的 detached watcher。
+ * `--exec /usr/bin/true` 讓它們跑一輪就結束,但「應該會結束」不是證據——
+ * 每個 case 寫下的 watcher.pid 收進這裡,afterAll 逐一確認它真的不在了,
+ * 殘留就讓整個 suite 紅,而不是靜靜地把孤兒行程留給下一個人。
+ */
+const spawnedPidFiles: string[] = [];
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+afterAll(async () => {
+  const leaked: string[] = [];
+  for (const pidPath of spawnedPidFiles) {
+    if (!existsSync(pidPath)) {
+      continue;
+    }
+    const pid = Number(readFileSync(pidPath, "utf-8").trim());
+    if (!Number.isInteger(pid) || pid <= 0) {
+      continue;
+    }
+    // spawn 與收屍之間有幾毫秒的空窗,所以給它一點時間再判定;仍在的話
+    // 先送 SIGTERM(不留孤兒),再登記成失敗。
+    for (let i = 0; i < 40 && pidAlive(pid); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (pidAlive(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // 已經自己走了
+      }
+      leaked.push(`${pidPath} (pid=${String(pid)})`);
+    }
+  }
+  expect(leaked, "矩陣留下了還活著的 watcher 行程").toEqual([]);
+});
 
 describe("cross-engine command matrix (I7)", () => {
   for (const cmd of TS_COMMANDS) {
@@ -475,6 +647,7 @@ describe("cross-engine command matrix (I7)", () => {
         const dirPy = mkdtempSync(join(tmpdir(), "cross-engine-py-"));
         const ts = runTs(c.build(dirTs));
         const py = runPy(c.build(dirPy));
+        spawnedPidFiles.push(join(dirTs, "watcher.pid"), join(dirPy, "watcher.pid"));
         const norm = (s: string, dir: string): string => {
           const withoutDir = s.split(dir).join("<DIR>");
           return c.normalize ? c.normalize(withoutDir) : withoutDir;

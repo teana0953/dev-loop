@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { spawnSync as spawnSync3 } from "node:child_process";
+import { spawnSync as spawnSync4 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
-import { dirname as dirname5, join as join4, resolve } from "node:path";
+import { dirname as dirname6, join as join4, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/checkpoint.ts
@@ -30,6 +30,14 @@ function pyTruthy(value) {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === "object") return Object.keys(value).length > 0;
   return Boolean(value);
+}
+function pyDictGet(obj, key, fallback) {
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new TypeError(
+      `AttributeError: '${obj === null ? "NoneType" : typeof obj}' object has no attribute 'get'`
+    );
+  }
+  return Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : fallback;
 }
 function pyIndex(data, key) {
   if (!Object.prototype.hasOwnProperty.call(data, key)) {
@@ -196,12 +204,71 @@ function transition(phase, iteration, event, maxIterations = DEFAULT_MAX_ITERATI
 
 // src/watcher.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname3, join as join2 } from "node:path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname4, join as join2 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/adapter.ts
+import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
+import { dirname as dirname3 } from "node:path";
+import { spawnSync } from "node:child_process";
 var DEFAULT_HEARTBEAT = 1800;
+var MAX_SLEEP_SECONDS = 3600;
+var OUTPUT_TAIL_CHARS = 500;
+var defaultSleep = (seconds) => {
+  if (seconds < 0) {
+    return Promise.reject(new Error("sleep length must be non-negative"));
+  }
+  return new Promise((resolve2) => setTimeout(resolve2, seconds * 1e3));
+};
+var defaultRun = (cmd) => {
+  const [head, ...rest] = cmd;
+  const proc = spawnSync(head, rest, {
+    encoding: "utf8",
+    // Python 的 subprocess.run(capture_output=True) 對輸出量沒有上限;Node 預設
+    // 1 MiB,超過就整個 spawnSync 變成 error.code === "ENOBUFS"。實測:
+    //   PY _default_run(寫 2 MiB) -> code=0, tail_len=500
+    //   TS(修前)                  -> throw "spawnSync ... ENOBUFS"
+    // 而下面的 rethrow 會把它一路丟出 runWatcher —— detached watcher 第一次嘗試
+    // 就死,watcher-log.jsonl 一行都沒有。ENOBUFS 正是那個 rethrow 過度捕捉的東西。
+    maxBuffer: Infinity
+  });
+  if (proc.error) {
+    throw proc.error;
+  }
+  const tail = [...(proc.stdout ?? "") + (proc.stderr ?? "")].slice(-OUTPUT_TAIL_CHARS).join("");
+  return [proc.status ?? 1, tail];
+};
+function appendLog(logPath, entry) {
+  if (!logPath) {
+    return;
+  }
+  try {
+    mkdirSync3(dirname3(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
+  } catch {
+  }
+}
+async function runWatcher(execCommand, opts = {}) {
+  const sleepFn = opts.sleepFn ?? defaultSleep;
+  const runFn = opts.runFn ?? defaultRun;
+  const interval = Math.min(opts.heartbeat ?? DEFAULT_HEARTBEAT, MAX_SLEEP_SECONDS);
+  for (; ; ) {
+    const result = runFn(execCommand);
+    const [code, tail] = Array.isArray(result) ? result : [result, ""];
+    appendLog(opts.logPath, {
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      exit_code: code,
+      output_tail: tail,
+      action: code === 0 ? "stop" : "retry",
+      heartbeat: interval
+    });
+    if (code === 0) {
+      return 0;
+    }
+    await sleepFn(interval);
+  }
+}
 
 // src/config.ts
 import { existsSync } from "node:fs";
@@ -296,10 +363,25 @@ function validateGateCmds(gateCmds) {
 }
 
 // src/pystr.ts
+var LINE_BOUNDARIES = /\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/;
+function pySplitlines(s) {
+  if (s === "") {
+    return [];
+  }
+  const parts = s.split(LINE_BOUNDARIES);
+  if (parts.length > 0 && parts[parts.length - 1] === "") {
+    parts.pop();
+  }
+  return parts;
+}
 var PY_STR_WS = "\\t\\n\\v\\f\\r\\x1c\\x1d\\x1e\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 var PY_STR_STRIP = new RegExp(`^[${PY_STR_WS}]+|[${PY_STR_WS}]+$`, "g");
 function pyStrip(s) {
   return s.replace(PY_STR_STRIP, "");
+}
+var PY_STR_RSTRIP = new RegExp(`[${PY_STR_WS}]+$`);
+function pyRstrip(s) {
+  return s.replace(PY_STR_RSTRIP, "");
 }
 var PY_INT_WS = "\\t\\n\\v\\f\\r \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 var PY_INT_STRIP = new RegExp(`^[${PY_INT_WS}]+|[${PY_INT_WS}]+$`, "g");
@@ -412,10 +494,10 @@ function pidAlive(pid) {
   return true;
 }
 function watcherPidPath(checkpointPath) {
-  return join2(dirname3(checkpointPath), "watcher.pid");
+  return join2(dirname4(checkpointPath), "watcher.pid");
 }
 function watcherLogPath(checkpointPath) {
-  return join2(dirname3(checkpointPath), "watcher-log.jsonl");
+  return join2(dirname4(checkpointPath), "watcher-log.jsonl");
 }
 function watcherState(checkpointPath) {
   const pidPath = watcherPidPath(checkpointPath);
@@ -429,7 +511,7 @@ function watcherState(checkpointPath) {
   return pidAlive(pid) ? ["running", pid] : ["dead", pid];
 }
 function spawnWatcher(execCommand, heartbeat, logPath) {
-  const pluginRoot = dirname3(dirname3(fileURLToPath(import.meta.url)));
+  const pluginRoot = dirname4(dirname4(fileURLToPath(import.meta.url)));
   const cli = join2(pluginRoot, "dist", "cli.js");
   const argv = [
     cli,
@@ -472,9 +554,28 @@ function ensureArmed(checkpointPath, opts = {}) {
     watcherLogPath(checkpointPath)
   );
   const pidPath = watcherPidPath(checkpointPath);
-  mkdirSync3(dirname3(pidPath), { recursive: true });
+  mkdirSync4(dirname4(pidPath), { recursive: true });
   writeFileSync3(pidPath, String(newPid), "utf-8");
   return ["armed", newPid];
+}
+function lastWatcherAttempt(checkpointPath) {
+  const log = watcherLogPath(checkpointPath);
+  if (!existsSync2(log)) {
+    return null;
+  }
+  let last = null;
+  for (const raw of pySplitlines(readFileSync2(log, "utf-8"))) {
+    const line = pyStrip(raw);
+    if (!line) {
+      continue;
+    }
+    try {
+      last = JSON.parse(line);
+    } catch {
+      continue;
+    }
+  }
+  return last;
 }
 function ensureArmedAfterSave(cp, file) {
   if (!pyTruthy(cp.resume_exec)) {
@@ -483,7 +584,7 @@ function ensureArmedAfterSave(cp, file) {
   if (cp.phase === "done") {
     return;
   }
-  const config = loadConfig(join2(dirname3(file), "config.json"));
+  const config = loadConfig(join2(dirname4(file), "config.json"));
   if (!config.auto_arm) {
     return;
   }
@@ -496,10 +597,10 @@ function ensureArmedAfterSave(cp, file) {
 }
 
 // src/openspec.ts
-import { spawnSync } from "node:child_process";
+import { spawnSync as spawnSync2 } from "node:child_process";
 var defaultRunner = (cmd) => {
   const [command, ...args] = cmd;
-  const proc = spawnSync(command, args, { encoding: "utf8" });
+  const proc = spawnSync2(command, args, { encoding: "utf8" });
   if (proc.error) {
     throw proc.error;
   }
@@ -519,17 +620,17 @@ import {
   chmodSync,
   copyFileSync,
   existsSync as existsSync3,
-  mkdirSync as mkdirSync4,
+  mkdirSync as mkdirSync5,
   readdirSync,
   renameSync,
   statSync,
   utimesSync
 } from "node:fs";
-import { basename, dirname as dirname4, join as join3 } from "node:path";
+import { basename, dirname as dirname5, join as join3 } from "node:path";
 var KEEP_FILES = ["config.json", "watcher.pid"];
 function archiveWorkfiles(checkpointPath, changeId) {
   const cpName = basename(checkpointPath);
-  const root = dirname4(checkpointPath);
+  const root = dirname5(checkpointPath);
   const dest = join3(root, "archive", String(changeId));
   const keep = /* @__PURE__ */ new Set([...KEEP_FILES, cpName]);
   const archived = [];
@@ -540,18 +641,18 @@ function archiveWorkfiles(checkpointPath, changeId) {
     if (st === void 0 || !st.isFile() || keep.has(name)) {
       continue;
     }
-    mkdirSync4(dest, { recursive: true });
+    mkdirSync5(dest, { recursive: true });
     renameSync(p, join3(dest, name));
     archived.push(name);
   }
   const meta = join3(root, "changes", `${changeId}.json`);
   if (existsSync3(meta)) {
-    mkdirSync4(dest, { recursive: true });
+    mkdirSync5(dest, { recursive: true });
     renameSync(meta, join3(dest, basename(meta)));
     archived.push(`changes/${basename(meta)}`);
   }
   if (existsSync3(checkpointPath)) {
-    mkdirSync4(dest, { recursive: true });
+    mkdirSync5(dest, { recursive: true });
     const target = join3(dest, cpName);
     copyFileSync(checkpointPath, target);
     const st = statSync(checkpointPath);
@@ -569,11 +670,11 @@ function pendingUnits(units) {
 }
 
 // src/gate.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 var defaultRunner2 = (cmd, cwd, timeout) => {
   const nonPositiveTimeout = timeout <= 0;
   const [head, ...rest] = cmd;
-  const proc = spawnSync2(head, rest, {
+  const proc = spawnSync3(head, rest, {
     cwd,
     encoding: "utf8",
     timeout: nonPositiveTimeout ? 1 : timeout * 1e3,
@@ -612,12 +713,21 @@ function runGate(commands, opts = {}) {
 }
 
 // src/cli.ts
-var TS_COMMANDS = ["archive", "units-status", "model", "event", "gate"];
+var TS_COMMANDS = [
+  "archive",
+  "units-status",
+  "model",
+  "event",
+  "gate",
+  "watch",
+  "arm-local",
+  "watcher-status"
+];
 function delegateToPython(argv) {
-  const root = dirname5(dirname5(fileURLToPath2(import.meta.url)));
+  const root = dirname6(dirname6(fileURLToPath2(import.meta.url)));
   const sep = process.platform === "win32" ? ";" : ":";
   const existing = process.env.PYTHONPATH;
-  const proc = spawnSync3("python3", ["-m", "devloop.cli", ...argv], {
+  const proc = spawnSync4("python3", ["-m", "devloop.cli", ...argv], {
     stdio: "inherit",
     env: { ...process.env, PYTHONPATH: existing ? `${root}${sep}${existing}` : root }
   });
@@ -640,7 +750,7 @@ function cmdArchive(file, archive, sweep) {
   try {
     const archived = sweep(file, cp.change_id);
     process.stdout.write(
-      `archived workfiles: ${archived.length} -> ${join4(dirname5(file), "archive", cp.change_id)}
+      `archived workfiles: ${archived.length} -> ${join4(dirname6(file), "archive", cp.change_id)}
 `
     );
   } catch (exc) {
@@ -734,7 +844,7 @@ function resolveGateCmds(cmds, file) {
   if (cmds.length > 0) {
     return cmds;
   }
-  const config = loadConfig(join4(dirname5(file), "config.json"));
+  const config = loadConfig(join4(dirname6(file), "config.json"));
   const resolved = validateGateCmds(config.gate_cmds);
   if (resolved.length === 0) {
     throw new Error(
@@ -783,6 +893,74 @@ function cmdGate(file, cmds, max, maxGate, timeout) {
   }
   process.stdout.write(`gate PASSED -> phase=${cp.phase} iteration=${cp.iteration}
 `);
+  return 0;
+}
+async function cmdWatch(execStr, heartbeat, log) {
+  return await runWatcher(shlexSplit(execStr), {
+    heartbeat,
+    logPath: log ?? void 0
+  });
+}
+function cmdArmLocal(file, execOverride, heartbeat) {
+  const [status, info] = ensureArmed(file, { heartbeat, execOverride });
+  if (status === "skipped") {
+    process.stderr.write(
+      "error: no resume command (checkpoint.resume_exec empty and no --exec)\n"
+    );
+    return 2;
+  }
+  if (status === "already") {
+    process.stdout.write(`watcher already running (pid=${String(info)})
+`);
+    return 0;
+  }
+  process.stdout.write(`watcher armed (pid=${String(info)})
+`);
+  return 0;
+}
+function cmdWatcherStatus(file) {
+  const cp = loadCheckpoint(file);
+  const [state, pid] = watcherState(file);
+  if (state === "running") {
+    process.stdout.write(`watcher: running (pid=${String(pid)})
+`);
+  } else if (state === "dead") {
+    process.stdout.write(`watcher: dead (stale pid=${String(pid)})
+`);
+  } else {
+    process.stdout.write("watcher: not armed\n");
+  }
+  const resume = cp.resume_exec;
+  process.stdout.write(
+    `resume_exec: ${pyFormat(pyTruthy(resume) ? resume : "(none)")}
+`
+  );
+  const last = lastWatcherAttempt(file);
+  if (last === null) {
+    process.stdout.write("last attempt: (none)\n");
+  } else {
+    const line = `last attempt: ${pyFormat(pyDictGet(last, "ts", "?"))} exit=${pyFormat(pyDictGet(last, "exit_code", "?"))} ${pyFormat(pyDictGet(last, "action", ""))}`;
+    process.stdout.write(`${pyRstrip(line)}
+`);
+    const rawTail = pyDictGet(last, "output_tail", null);
+    const tailSource = pyTruthy(rawTail) ? rawTail : "";
+    if (typeof tailSource !== "string") {
+      throw new TypeError(
+        `AttributeError: output_tail object has no attribute 'strip' (got ${Array.isArray(tailSource) ? "array" : typeof tailSource})`
+      );
+    }
+    const tail = pyStrip(tailSource);
+    if (tail) {
+      process.stdout.write(`output tail: ${tail}
+`);
+    }
+  }
+  const needed = cp.phase !== "done" && pyTruthy(resume);
+  if (needed && state !== "running") {
+    process.stdout.write(`hint: devloop arm-local --file ${file}
+`);
+    return 1;
+  }
   return 0;
 }
 function pyReprStr(s) {
@@ -1026,6 +1204,71 @@ async function dispatch(argv, deps) {
       return 2;
     }
     return cmdGate(file, repeated.get("--cmd") ?? [], max, maxGate, timeout);
+  }
+  if (cmd === "watch") {
+    const { values, unknown, error } = parseArgs(rest, ["--exec", "--heartbeat", "--log"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const execStr = rawFlag(values, "--exec");
+    if (execStr === void 0) {
+      process.stderr.write("error: the following arguments are required: --exec\n");
+      return 2;
+    }
+    const heartbeat = parseIntFlag(values, "--heartbeat", DEFAULT_HEARTBEAT);
+    if (heartbeat === null) {
+      return 2;
+    }
+    return await cmdWatch(execStr, heartbeat, rawFlag(values, "--log") ?? null);
+  }
+  if (cmd === "arm-local") {
+    const { values, unknown, error } = parseArgs(rest, ["--file", "--exec", "--heartbeat"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === void 0) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    const heartbeat = parseIntFlag(values, "--heartbeat", DEFAULT_HEARTBEAT);
+    if (heartbeat === null) {
+      return 2;
+    }
+    return cmdArmLocal(file, rawFlag(values, "--exec") ?? null, heartbeat);
+  }
+  if (cmd === "watcher-status") {
+    const { values, unknown, error } = parseArgs(rest, ["--file"]);
+    if (error !== null) {
+      process.stderr.write(`error: ${error}
+`);
+      return 2;
+    }
+    if (unknown.length > 0) {
+      process.stderr.write(`error: unrecognized arguments: ${unknown.join(" ")}
+`);
+      return 2;
+    }
+    const file = rawFlag(values, "--file");
+    if (file === void 0) {
+      process.stderr.write("error: the following arguments are required: --file\n");
+      return 2;
+    }
+    return cmdWatcherStatus(file);
   }
   if (cmd === "model") {
     const { values, unknown, error } = parseArgs(rest, ["--stage", "--config"]);

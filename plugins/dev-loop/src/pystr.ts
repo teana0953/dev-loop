@@ -47,6 +47,23 @@ export function pyStrip(s: string): string {
   return s.replace(PY_STR_STRIP, "");
 }
 
+const PY_STR_RSTRIP = new RegExp(`[${PY_STR_WS}]+$`);
+
+/**
+ * Python `str.rstrip()`(無引數)。與 JS 的 `/\s+$/` 兩邊各差一組,方向相反
+ * ——`\s` 含 U+FEFF 而不含 \x1c-\x1f,Python 反之。
+ *
+ * 用在 watcher-status 的 `print(line.rstrip())`:那一行的最後一個欄位是
+ * watcher log 裡的 `action`,內容是誰寫進 log 的就是什麼。實測(log 最後一行
+ * 的 action 分別帶尾綴):
+ *   action "stop\x1c" -> PY 印 'last attempt: T exit=0 stop'(剝掉)
+ *   action "stop﻿" -> PY 印 'last attempt: T exit=0 stop﻿'(留著)
+ * 用 `/\s+$/` 的 TS 兩條都會給出相反的答案。
+ */
+export function pyRstrip(s: string): string {
+  return s.replace(PY_STR_RSTRIP, "");
+}
+
 // Python 的 int() 在轉換前**自己**剝掉的空白集合。實測(逐一把 c + "12" + c
 // 餵給 int()):它剝掉 str.isspace() 為真的字元,唯獨 \x1c-\x1f 這四個例外——
 // 它們 isspace() 為真(所以 str.strip() 會剝),int() 卻拒絕。也就是

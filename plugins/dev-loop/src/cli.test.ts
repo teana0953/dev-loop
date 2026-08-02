@@ -1256,3 +1256,363 @@ describe("parseArgs: argparse compatibility", () => {
     expect(loadCheckpoint(file).phase).toBe("apply");
   });
 });
+
+/**
+ * watcher 生命週期三支命令(watch / arm-local / watcher-status)。
+ *
+ * 每條的預期值都抄自 Python 的實測輸出(`python3 -m devloop.cli ...`,每個
+ * 引擎各自一個全新的暫存目錄——arm-local 會寫 watcher.pid、watch 會寫 log,
+ * 共用目錄量到的全是假的),不是從 TS 實作反推的。
+ *
+ * 這是第一組會真的 spawn detached 背景行程的測試:凡是不需要 watcher 活著的
+ * 地方一律用 `/usr/bin/true`(跑完立刻結束),只有「already running」那條需要
+ * 一個活的行程,用短命的 sleep 並在測試裡殺掉。
+ */
+describe("watch", () => {
+  it("runs the exec command once when it succeeds and appends one log line", async () => {
+    // PY(實測):stdout 空、exit 0,watcher-log.jsonl 一行
+    // {"ts": ..., "exit_code": 0, "output_tail": "", "action": "stop", "heartbeat": 1}
+    const dir = mkdtempSync(join(tmpdir(), "cli-watch-"));
+    const log = join(dir, "w.jsonl");
+    expect(await main([
+      "watch", "--exec", "/usr/bin/true", "--heartbeat", "1", "--log", log,
+    ])).toBe(0);
+    const lines = readFileSync(log, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(1);
+    const entry = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(entry.action).toBe("stop");
+    expect(entry.exit_code).toBe(0);
+    expect(entry.heartbeat).toBe(1);
+  });
+
+  it("splits --exec with shlex, so a quoted argument stays one argv element", async () => {
+    // resume_exec 的典型值是 `claude -p '/dev-loop resume'`——切錯的話 watcher
+    // 每次重試都跑一個錯的命令,而且只有 watcher-log.jsonl 看得到。
+    //
+    // 執行檔本身也加引號是刻意的:切錯時 head 會是帶引號的 `'/bin/sh'`,兩個
+    // 引擎都當場 FileNotFoundError/ENOENT 而死(實測 PY run_watcher 對
+    // `"'/bin/sh' -c ...".split(" ")` -> RAISED FileNotFoundError "'/bin/sh'")。
+    // 若只給 `/bin/sh -c '...'`,切錯的版本會變成一個**永遠失敗、每秒重試的
+    // 無窮迴圈**——測試不是紅,是掛住,而且留下背景行程。實測過:那個變異體
+    // 讓 crossEngine 的同款 case 跑了 10 分鐘沒結束。
+    const dir = mkdtempSync(join(tmpdir(), "cli-watch-"));
+    const marker = join(dir, "marker");
+    expect(await main([
+      "watch", "--exec", `'/bin/sh' -c 'printf x > ${marker}'`, "--heartbeat", "1",
+    ])).toBe(0);
+    expect(readFileSync(marker, "utf-8")).toBe("x");
+  });
+
+  it("requires --exec (it is optional only for arm-local)", async () => {
+    // PY(實測):"devloop watch: error: the following arguments are required: --exec", exit 2
+    const s = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const rc = await main(["watch", "--heartbeat", "1"]);
+    s.mockRestore();
+    expect(rc).toBe(2);
+  });
+});
+
+describe("arm-local", () => {
+  function fixture(fields: Record<string, unknown> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-arm-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "apply", change_id: "c1", branch: "b", ...fields }), file);
+    return file;
+  }
+
+  function capture(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const s = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => s.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => s.mockRestore(),
+    };
+  }
+
+  /** 收尾:把剛 spawn 的 watcher 殺掉,測試不留孤兒行程。 */
+  function killWatcher(file: string): void {
+    const pidPath = join(dirname(file), "watcher.pid");
+    if (!existsSync(pidPath)) {
+      return;
+    }
+    try {
+      process.kill(Number(readFileSync(pidPath, "utf-8").trim()), "SIGKILL");
+    } catch {
+      // 已經自己結束了
+    }
+  }
+
+  it("arms, then reports already on the second call", async () => {
+    // PY(實測,resume_exec="/bin/sh -c 'sleep 5'"):
+    //   第一次 "watcher armed (pid=91018)" exit 0
+    //   第二次 "watcher already running (pid=91018)" exit 0
+    //   watcher-status  "watcher: running (pid=91018)" exit 0
+    // sleep 讓 watcher 活著足以量到 "already";測試結束前殺掉。
+    const file = fixture({ resume_exec: "/bin/sh -c 'sleep 5'" });
+    try {
+      const out = capture("stdout");
+      const rc = await main(["arm-local", "--file", file, "--heartbeat", "1"]);
+      const first = out.text();
+      out.restore();
+      expect(rc).toBe(0);
+      expect(first).toMatch(/^watcher armed \(pid=\d+\)\n$/);
+      expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(true);
+
+      const out2 = capture("stdout");
+      const rc2 = await main(["arm-local", "--file", file, "--heartbeat", "1"]);
+      const second = out2.text();
+      out2.restore();
+      expect(rc2).toBe(0);
+      expect(second).toBe(first.replace("watcher armed", "watcher already running"));
+
+      // 同一個活著的 watcher 也把 watcher-status 的 "running" 分支釘住:
+      // 需要 watcher 而它在位 -> exit 0、沒有 hint。
+      const out3 = capture("stdout");
+      const rc3 = await main(["watcher-status", "--file", file]);
+      const status = out3.text();
+      out3.restore();
+      expect(rc3).toBe(0);
+      expect(status).toMatch(/^watcher: running \(pid=\d+\)\n/);
+      expect(status).not.toContain("hint:");
+    } finally {
+      killWatcher(file);
+    }
+  });
+
+  it("exits 2 when there is no resume command anywhere", async () => {
+    // PY(實測):stderr "error: no resume command (checkpoint.resume_exec empty
+    // and no --exec)", exit 2,不寫 watcher.pid
+    const file = fixture();
+    const err = capture("stderr");
+    const rc = await main(["arm-local", "--file", file]);
+    const msg = err.text();
+    err.restore();
+    expect(rc).toBe(2);
+    expect(msg).toBe(
+      "error: no resume command (checkpoint.resume_exec empty and no --exec)\n");
+    expect(existsSync(join(dirname(file), "watcher.pid"))).toBe(false);
+  });
+
+  it("accepts --exec as an override when the checkpoint has no resume command", async () => {
+    // PY(實測):"watcher armed (pid=94125)" exit 0 —— --exec 對 arm-local 是
+    // optional 而不是 required,這條擋住把兩支命令的 required 寫反。
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main([
+      "arm-local", "--file", file, "--exec", "/usr/bin/true", "--heartbeat", "1"]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toMatch(/^watcher armed \(pid=\d+\)\n$/);
+    killWatcher(file);
+  });
+});
+
+describe("watcher-status", () => {
+  function fixture(
+    fields: Record<string, unknown> = {},
+    extras: { pid?: number; log?: string } = {},
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "cli-wstatus-"));
+    const file = join(dir, "cp.json");
+    saveCheckpoint(
+      makeCheckpoint({ phase: "apply", change_id: "c1", branch: "b", ...fields }), file);
+    if (extras.pid !== undefined) {
+      writeFileSync(join(dir, "watcher.pid"), String(extras.pid), "utf-8");
+    }
+    if (extras.log !== undefined) {
+      writeFileSync(join(dir, "watcher-log.jsonl"), extras.log, "utf-8");
+    }
+    return file;
+  }
+
+  function capture(stream: "stdout" | "stderr"): { text: () => string; restore: () => void } {
+    const s = vi.spyOn(process[stream], "write").mockImplementation(() => true);
+    return {
+      text: () => s.mock.calls.map(([msg]) => String(msg)).join(""),
+      restore: () => s.mockRestore(),
+    };
+  }
+
+  /**
+   * `expect(p).rejects` 在 vitest 對 ReferenceError 也算通過(整支測試檔沒有
+   * 型別檢查),所以自己把錯誤抓出來並排除 ReferenceError。
+   */
+  async function expectRejects(p: Promise<unknown>, label: string): Promise<unknown> {
+    let caught: unknown;
+    try {
+      await p;
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught, `${label}: 必須拋錯`).toBeInstanceOf(Error);
+    expect(caught, `${label}: 拋的是 ReferenceError —— 測試自己壞了`)
+      .not.toBeInstanceOf(ReferenceError);
+    return caught;
+  }
+
+  it("reports not armed and exits 1 when a watcher is needed but missing", async () => {
+    // PY(實測)stdout 四行、exit 1:
+    //   watcher: not armed / resume_exec: /usr/bin/true / last attempt: (none)
+    //   hint: devloop arm-local --file <cp>
+    const file = fixture({ resume_exec: "/usr/bin/true" });
+    const out = capture("stdout");
+    const rc = await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toBe(
+      "watcher: not armed\nresume_exec: /usr/bin/true\nlast attempt: (none)\n"
+      + `hint: devloop arm-local --file ${file}\n`);
+  });
+
+  it("exits 0 in the done phase even with no watcher", async () => {
+    // PY(實測):同樣三行、**沒有** hint、exit 0。
+    const file = fixture({ phase: "done", resume_exec: "/usr/bin/true" });
+    const out = capture("stdout");
+    const rc = await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toBe(
+      "watcher: not armed\nresume_exec: /usr/bin/true\nlast attempt: (none)\n");
+  });
+
+  it("exits 0 with no resume command, because no watcher is needed", async () => {
+    // PY(實測):"resume_exec: (none)" exit 0。
+    const file = fixture();
+    const out = capture("stdout");
+    const rc = await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toContain("resume_exec: (none)\n");
+    expect(printed).not.toContain("hint:");
+  });
+
+  it("treats an empty-container resume_exec as absent, like Python's bool()", async () => {
+    // 實測 checkpoint {"resume_exec": []}:
+    //   PY  -> "resume_exec: (none)", exit 0
+    //   TS(用 `||`/`Boolean`) -> "resume_exec: ", exit 1 + hint
+    // 而 [0] 兩邊都 truthy,PY 的 `%s` 印 "[0]"、`String([0])` 印 "0"。
+    const empty = fixture({ resume_exec: [] as unknown as string });
+    const out = capture("stdout");
+    const rc = await main(["watcher-status", "--file", empty]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(0);
+    expect(printed).toContain("resume_exec: (none)\n");
+
+    const nonEmpty = fixture({ resume_exec: [0] as unknown as string });
+    const out2 = capture("stdout");
+    const rc2 = await main(["watcher-status", "--file", nonEmpty]);
+    const printed2 = out2.text();
+    out2.restore();
+    expect(rc2).toBe(1);
+    expect(printed2).toContain("resume_exec: [0]\n");
+  });
+
+  it("reports a stale pid as dead", async () => {
+    // 一個已經被 reap 的 pid:spawn 一個立刻結束的行程並等它收屍,那個 pid
+    // 於是保證不存在(隨手挑一個大數字可能剛好撞到別人的行程)。
+    // PY(實測):"watcher: dead (stale pid=90703)" + hint, exit 1
+    const reaped = spawnSync("/usr/bin/true", [], { encoding: "utf-8" });
+    const dead = reaped.pid as number;
+    const file = fixture({ resume_exec: "/usr/bin/true" }, { pid: dead });
+    const out = capture("stdout");
+    const rc = await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(rc).toBe(1);
+    expect(printed).toContain(`watcher: dead (stale pid=${dead})`);
+  });
+
+  it("prints the last attempt and its output tail", async () => {
+    // PY(實測):
+    //   last attempt: 2026-08-02T00:00:00Z exit=1 retry
+    //   output tail: boom
+    const file = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({
+        ts: "2026-08-02T00:00:00Z", exit_code: 1, output_tail: "boom",
+        action: "retry", heartbeat: 1,
+      }) + "\n",
+    });
+    const out = capture("stdout");
+    await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain("last attempt: 2026-08-02T00:00:00Z exit=1 retry\n");
+    expect(printed).toContain("output tail: boom\n");
+  });
+
+  it("rstrips the attempt line with Python's whitespace set, not JavaScript's", async () => {
+    // 實測(log 最後一行的 action 帶尾綴):
+    //   action "stop\x1c" -> PY 'last attempt: T exit=0 stop'(\x1c 被 rstrip 掉)
+    //   action "stop﻿" -> PY 'last attempt: T exit=0 stop﻿'(BOM 留著)
+    // JS 的 /\s+$/ 兩條都給相反的答案。
+    const sep = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({ ts: "T", exit_code: 0, action: "stop\x1c" }) + "\n",
+    });
+    const out = capture("stdout");
+    await main(["watcher-status", "--file", sep]);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain("last attempt: T exit=0 stop\n");
+
+    const bom = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({ ts: "T", exit_code: 0, action: "stop﻿" }) + "\n",
+    });
+    const out2 = capture("stdout");
+    await main(["watcher-status", "--file", bom]);
+    const printed2 = out2.text();
+    out2.restore();
+    expect(printed2).toContain("last attempt: T exit=0 stop﻿\n");
+  });
+
+  it("formats the attempt fields with Python's %s, not String()", async () => {
+    // 實測 {"ts": null, "exit_code": true, "action": null}:
+    //   PY -> 'last attempt: None exit=True None'
+    //   String() -> 'last attempt: null exit=true null'
+    const file = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({ ts: null, exit_code: true, action: null }) + "\n",
+    });
+    const out = capture("stdout");
+    await main(["watcher-status", "--file", file]);
+    const printed = out.text();
+    out.restore();
+    expect(printed).toContain("last attempt: None exit=True None\n");
+  });
+
+  it("propagates instead of printing '?' when a log line is a bare scalar", async () => {
+    // Python 的 last.get(...) 對一個 int 會 AttributeError:排障工具在這裡
+    // 大聲失敗(實測 exit 1,且 "watcher:"/"resume_exec:" 兩行已經印出去)。
+    // TS 若用 `obj.ts` 只會拿到 undefined 然後印 "?",變成兩個引擎對同一個
+    // 壞掉的 log 給出不同結論。
+    const file = fixture({ resume_exec: "/usr/bin/true" }, { log: "42\n" });
+    const out = capture("stdout");
+    const exc = await expectRejects(
+      main(["watcher-status", "--file", file]), "bare scalar log line");
+    const printed = out.text();
+    out.restore();
+    expect((exc as Error).message).toContain("has no attribute 'get'");
+    expect(printed).toContain("resume_exec: /usr/bin/true\n");
+    expect(printed).not.toContain("last attempt:");
+  });
+
+  it("propagates when output_tail is truthy but not a string", async () => {
+    // 實測 {"output_tail": 5}:PY 印完 "last attempt: ..." 那行之後
+    // AttributeError: 'int' object has no attribute 'strip',exit 1。
+    // `String(x).trim()` 會靜默印 "output tail: 5"。
+    const file = fixture({ resume_exec: "/usr/bin/true" }, {
+      log: JSON.stringify({ ts: "T", exit_code: 0, action: "stop", output_tail: 5 }) + "\n",
+    });
+    const out = capture("stdout");
+    const exc = await expectRejects(
+      main(["watcher-status", "--file", file]), "non-string output_tail");
+    const printed = out.text();
+    out.restore();
+    expect((exc as Error).message).toContain("has no attribute 'strip'");
+    expect(printed).toContain("last attempt: T exit=0 stop\n");
+    expect(printed).not.toContain("output tail:");
+  });
+});
