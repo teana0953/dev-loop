@@ -191,6 +191,22 @@ describe("cross-arm: the watcher.pid handoff file", () => {
       .toContain(`watcher: dead (stale pid=${String(reaped)})`);
   });
 
+  it("both engines classify a pid owned by another user (EPERM) as running", () => {
+    // pid 1 是 launchd,root 持有、永遠在跑,非 root 呼叫者對它 kill(pid, 0)
+    // 必得 EPERM——不需要真的起第二個使用者的行程就能考到 EPERM 分支。
+    // 實測(本機、非 root):
+    //   node -e 'process.kill(1,0)'  -> EPERM
+    //   python3 -c 'os.kill(1,0)'    -> PermissionError(EPERM)
+    // EPERM 分類錯的後果比 ESRCH 分類錯更糟:把「活著但屬他人」判成死,會讓
+    // 兩個引擎對同一個其實還活著的 watcher 各自重新 spawn 一個。
+    const file = fixture();
+    writeFileSync(join(dirname(file), "watcher.pid"), "1", "utf-8");
+    expect(runTs(["watcher-status", "--file", file]).stdout)
+      .toContain("watcher: running (pid=1)");
+    expect(runPy(["watcher-status", "--file", file]).stdout)
+      .toContain("watcher: running (pid=1)");
+  });
+
   it("both engines treat a corrupt pid file as absent, not as an error", () => {
     const file = fixture();
     writeFileSync(join(dirname(file), "watcher.pid"), "not-a-pid\n", "utf-8");
