@@ -821,12 +821,66 @@ export async function main(argv: string[], deps: Partial<CliDeps> = {}): Promise
   }
 }
 
+/**
+ * 這條命令列是不是在求助(`-h` / `--help` / `--help` 的縮寫)?
+ *
+ * argparse 的 `-h/--help` 是每個 subparser 自動加的,這支手寫解析器沒有,於是
+ * 一個命令被提拔進 TS_COMMANDS 的當下 `devloop <cmd> --help` 就從「印 usage、
+ * exit 0」變成「error: unrecognized arguments: --help、exit 2」。所有求助的
+ * 命令列一律原樣委派回 Python,help 文字因此永遠是 argparse 產的那一份,不必
+ * 在這裡複製一份會漂移的 usage。
+ *
+ * 實測 argparse(python3 -m devloop.cli,PYTHONPATH=plugins/dev-loop):
+ *   `status --help` / `status -h`            -> usage,exit 0
+ *   `status --hel` / `status --he` / `--h`   -> usage,exit 0(唯一前綴縮寫)
+ *   `watch --h` / `arm-local --h`            -> exit 2 "ambiguous option: --h
+ *                                               could match --help, --heartbeat"
+ *   `status --file /nope -h` / `status -x -h`-> usage,exit 0(先於必填檢查、
+ *                                               先於 unrecognized 檢查)
+ *   `status --help=x`                        -> exit 2 "argument -h/--help:
+ *                                               ignored explicit argument 'x'"
+ *   `status --file -h`                       -> exit 2 "argument --file:
+ *                                               expected one argument"
+ *   `status -- --help`                       -> **不是** help:`--` 之後一律是
+ *                                               positional,實測落到 exit 2
+ *                                               "the following arguments are
+ *                                               required: --file"
+ *   `status --help --` / `status -h --`      -> usage,exit 0(`--` 在後面不影響)
+ *
+ * 後四種委派過去仍然是 Python 自己回答,所以「求助」判得寬一點(含縮寫、含
+ * `--help=x`、含出現在值位置的 `-h`)不會答錯——那些 case 委派後拿到的正是
+ * argparse 的原始答案,比 TS 自己編一份更接近參考實作。唯一必須判準的是 `--`:
+ * 它之後的 `--help` 不得觸發委派。
+ */
+function helpRequested(rest: string[]): boolean {
+  for (const tok of rest) {
+    if (tok === "--") {
+      // separator 之後全是 positional,不再有旗標語意
+      return false;
+    }
+    if (tok === "-h") {
+      return true;
+    }
+    const eq = tok.indexOf("=");
+    const name = eq === -1 ? tok : tok.slice(0, eq);
+    // "--h" / "--he" / "--hel" / "--help";長度下限排掉 `--` 與 `--=x`
+    if (name.length >= 3 && "--help".startsWith(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function dispatch(argv: string[], deps: Partial<CliDeps>): Promise<number> {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === undefined || !(TS_COMMANDS as readonly string[]).includes(cmd)) {
     // 未知命令也走這條:Python 的 argparse 會印出 usage 與合法命令清單並回 2,
     // 那正是現行行為,不需要在這裡另外複製一份。
+    return delegate(argv);
+  }
+  // 求助先於任何命令專屬解析:argparse 的 -h/--help 也是在必填檢查之前生效。
+  if (helpRequested(rest)) {
     return delegate(argv);
   }
   if (cmd === "archive") {

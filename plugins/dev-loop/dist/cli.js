@@ -1234,10 +1234,29 @@ async function main(argv, deps = {}) {
     throw exc;
   }
 }
+function helpRequested(rest) {
+  for (const tok of rest) {
+    if (tok === "--") {
+      return false;
+    }
+    if (tok === "-h") {
+      return true;
+    }
+    const eq = tok.indexOf("=");
+    const name = eq === -1 ? tok : tok.slice(0, eq);
+    if (name.length >= 3 && "--help".startsWith(name)) {
+      return true;
+    }
+  }
+  return false;
+}
 async function dispatch(argv, deps) {
   const delegate = deps.delegate ?? delegateToPython;
   const [cmd, ...rest] = argv;
   if (cmd === void 0 || !TS_COMMANDS.includes(cmd)) {
+    return delegate(argv);
+  }
+  if (helpRequested(rest)) {
     return delegate(argv);
   }
   if (cmd === "archive") {

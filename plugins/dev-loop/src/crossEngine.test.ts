@@ -34,6 +34,7 @@ const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 interface EngineResult {
   stdout: string;
+  stderr: string;
   exit_code: number;
 }
 
@@ -50,7 +51,7 @@ function runTs(argv: string[]): EngineResult {
   const proc = spawnSync("node", [CLI, ...argv], {
     encoding: "utf-8", timeout: ENGINE_TIMEOUT_MS, killSignal: "SIGKILL",
   });
-  return { stdout: proc.stdout ?? "", exit_code: proc.status ?? 1 };
+  return { stdout: proc.stdout ?? "", stderr: proc.stderr ?? "", exit_code: proc.status ?? 1 };
 }
 
 function runPy(argv: string[]): EngineResult {
@@ -60,7 +61,7 @@ function runPy(argv: string[]): EngineResult {
     killSignal: "SIGKILL",
     env: { ...process.env, PYTHONPATH: PLUGIN_ROOT },
   });
-  return { stdout: proc.stdout ?? "", exit_code: proc.status ?? 1 };
+  return { stdout: proc.stdout ?? "", stderr: proc.stderr ?? "", exit_code: proc.status ?? 1 };
 }
 
 const CHECKPOINT_DEFAULTS = {
@@ -86,6 +87,22 @@ interface MatrixCase {
   build: (dir: string) => string[];
   /** 比對前的歸一化;dir 已被換成 <DIR>,這裡處理 pid、時間戳之類的易變欄位。 */
   normalize?: (stdout: string) => string;
+  /**
+   * 「這一列的預期行為是兩邊都以未捕捉的例外死掉」時,各自的 stderr 必須長成
+   * 什麼樣子。
+   *
+   * 為什麼需要這個欄位:`(exit 1, stdout "")` 同時也是「TS 引擎根本沒跑起來」
+   * 的長相——runTs 把 spawn 失敗折成 `exit_code: proc.status ?? 1` 與
+   * `stdout ?? ""`。實測把 dist/cli.js 換成一支 `exit 1` 的殼,三條 crash 列
+   * 全數照樣通過,其中 "an empty --exec dies instead of looping" 的通過條件
+   * 根本就是「當掉」。有了這個欄位,那三列會要求 stderr 真的是預期的那個
+   * 錯誤類別,「引擎不存在」就再也冒充不了「忠實重現」。
+   *
+   * stderr 的**文字**仍然不做跨引擎比對(argparse vs. 手寫解析器的措辭分歧是
+   * 既有的、寫在 fixtures/parity/README.md 的接受項);這裡比的是「各自那側
+   * 的錯誤類別」,兩個 pattern 各釘各的引擎。
+   */
+  stderr?: { ts: RegExp; py: RegExp };
 }
 
 const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
@@ -373,6 +390,9 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         mkdirSync(join(dir, "config.json"));
         return ["gate", "--file", cp];
       },
+      // 實測:PY `IsADirectoryError: [Errno 21] Is a directory: '<dir>/config.json'`
+      //       TS `Error: EISDIR: illegal operation on a directory, read`
+      stderr: { ts: /EISDIR/, py: /IsADirectoryError/ },
     },
     {
       // 另一半:JSONDecodeError 是 ValueError 的子類 -> 兩邊都 exit 2。
@@ -451,6 +471,13 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
         writeCheckpoint(dir, { phase: "gate", change_id: "c1", branch: "b" }),
         "--cmd", "no-such-executable-xyz",
       ],
+      // 實測:PY `FileNotFoundError: [Errno 2] No such file or directory:
+      //           'no-such-executable-xyz'`
+      //       TS `Error: spawnSync no-such-executable-xyz ENOENT`
+      stderr: {
+        ts: /spawnSync no-such-executable-xyz ENOENT/,
+        py: /FileNotFoundError.*no-such-executable-xyz/s,
+      },
     },
   ],
   watch: [
@@ -476,6 +503,11 @@ const MATRIX: Partial<Record<(typeof TS_COMMANDS)[number], MatrixCase[]>> = {
       // PY:shlex.split("") -> [] -> run_watcher 對 cmd[0] IndexError,exit 1。
       name: "an empty --exec dies instead of looping",
       build: () => ["watch", "--exec", "", "--heartbeat", "1"],
+      // 這一列的「通過」條件本身就是當掉,所以更需要釘住是**誰**在當:
+      // 實測 PY `IndexError: list index out of range`(cmd[0])
+      //      TS `TypeError [ERR_INVALID_ARG_TYPE]: The "file" argument must be
+      //          of type string. Received undefined`(spawnSync 的 file)
+      stderr: { ts: /ERR_INVALID_ARG_TYPE/, py: /IndexError/ },
     },
   ],
   "arm-local": [
@@ -711,6 +743,14 @@ afterAll(async () => {
     if (pidAlive(pid)) {
       killProcessGroup(pid);
       leaked.push(`${pidPath} (pid=${String(pid)})`);
+    } else {
+      // watcher 自己走了不代表乾淨:它 spawn 的續跑命令會被 reparent 成孤兒
+      // 繼續跑,而且 pid 檔裡沒有它的號碼——只看 watcher 死沒死的話,這個
+      // guard 對「孫行程外流」永遠是綠的(實測:一個 `sleep` 續跑命令在
+      // watcher 結束後仍在,guard 什麼都沒抓到)。所以不論 watcher 死活,
+      // 一律對整個 process group 補一刀;crossArm.test.ts 的孿生 guard 早就
+      // 是這樣寫的,兩邊現在一致。
+      killProcessGroup(pid);
     }
   }
   expect(leaked, "矩陣留下了還活著的 watcher 行程").toEqual([]);
@@ -748,6 +788,40 @@ describe("cross-engine command matrix (I7)", () => {
         expect(ts.exit_code, `${cmd}/${c.name}: exit code`).toBe(py.exit_code);
         expect(norm(ts.stdout, dirTs), `${cmd}/${c.name}: stdout`)
           .toBe(norm(py.stdout, dirPy));
+        if (c.stderr) {
+          // 「兩邊都爆」的列:確認爆的是預期的錯誤類別,而不是引擎沒跑起來。
+          expect(ts.stderr, `${cmd}/${c.name}: TS stderr`).toMatch(c.stderr.ts);
+          expect(py.stderr, `${cmd}/${c.name}: PY stderr`).toMatch(c.stderr.py);
+        }
+      });
+    }
+  }
+});
+
+/**
+ * `-h` / `--help`:每一個 TS 命令都要跟 argparse 逐字元相同。
+ *
+ * argparse 給每個 subparser 自動加了 `-h/--help`,這支手寫解析器沒有。命令被
+ * 提拔進 TS_COMMANDS 的當下,`devloop status --help` 就從「印 usage、exit 0」
+ * 變成「error: unrecognized arguments: --help、exit 2」——這是 M2b-2b 造成的
+ * 回歸,`status --help` 又是這個產品裡最可能被打出來的求助寫法。
+ *
+ * 這一組跟著 TS_COMMANDS 迭代(不是寫死的命令清單),所以下一個里程碑提拔
+ * 的命令自動被涵蓋。usage 文字兩邊必然相同,因為 TS 的答案就是委派回 Python
+ * 拿到的那一份;真正被守住的是「有沒有委派」。
+ */
+describe("--help is delegated to Python on every TS-owned command", () => {
+  for (const cmd of TS_COMMANDS) {
+    for (const flag of ["--help", "-h"]) {
+      it(`${cmd} ${flag}`, () => {
+        const ts = runTs([cmd, flag]);
+        const py = runPy([cmd, flag]);
+        expect(ts.exit_code, `${cmd} ${flag}: exit code`).toBe(0);
+        expect(ts.exit_code).toBe(py.exit_code);
+        expect(ts.stdout, `${cmd} ${flag}: stdout`).toBe(py.stdout);
+        // 「兩邊都空」也會讓上面那條相等成立(引擎不存在時就是這樣),所以
+        // 額外釘住 usage 真的印出來了。
+        expect(ts.stdout).toContain(`usage: devloop ${cmd}`);
       });
     }
   }

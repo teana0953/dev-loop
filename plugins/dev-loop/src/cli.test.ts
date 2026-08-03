@@ -235,6 +235,105 @@ describe("command routing", () => {
   });
 });
 
+/**
+ * `-h` / `--help` 一律原樣委派回 Python。
+ *
+ * argparse 給每個 subparser 自動加了 `-h/--help`;這支手寫解析器沒有,所以一個
+ * 命令進 TS_COMMANDS 的同時,它的 `--help` 就從「印 usage、exit 0」退化成
+ * 「error: unrecognized arguments: --help、exit 2」(M2b-2b 的回歸,實測)。
+ * 求助的命令列不做任何命令專屬解析,直接交給 argparse 自己回答。
+ *
+ * 所有預期值都來自實測 `PYTHONPATH=plugins/dev-loop python3 -m devloop.cli ...`。
+ */
+describe("--help/-h is delegated to Python before any command-specific parsing", () => {
+  async function delegated(argv: string[]): Promise<string[][]> {
+    const seen: string[][] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const rc = await main(argv, { delegate: (a) => { seen.push(a); return 0; } });
+    stderrSpy.mockRestore();
+    if (seen.length > 0) {
+      // 委派時 rc 由 Python 決定,這裡的 stub 回 0;沒委派的話 rc 會是 TS 自己
+      // 的錯誤碼,下面的 toEqual 會先報出來。
+      expect(rc, `${argv.join(" ")}: 委派後應回傳 delegate 的回傳值`).toBe(0);
+    }
+    return seen;
+  }
+
+  for (const cmd of TS_COMMANDS) {
+    it(`${cmd} --help goes to Python (argparse: usage, exit 0)`, async () => {
+      expect(await delegated([cmd, "--help"])).toEqual([[cmd, "--help"]]);
+    });
+
+    it(`${cmd} -h goes to Python`, async () => {
+      expect(await delegated([cmd, "-h"])).toEqual([[cmd, "-h"]]);
+    });
+  }
+
+  it("--help wins over a missing required flag, like argparse", async () => {
+    // 實測 `status --help`(沒有 --file):usage、exit 0,不是
+    // "the following arguments are required: --file"。
+    expect(await delegated(["status", "--help"])).toEqual([["status", "--help"]]);
+  });
+
+  it("--help anywhere on the line counts, not just first", async () => {
+    // 實測 `status --file /nope -h` 與 `status -x -h`:兩者都是 usage、exit 0
+    //(help 先於必填檢查,也先於 unrecognized arguments 檢查)。
+    expect(await delegated(["status", "--file", "/nope", "-h"]))
+      .toEqual([["status", "--file", "/nope", "-h"]]);
+    expect(await delegated(["status", "-x", "-h"])).toEqual([["status", "-x", "-h"]]);
+  });
+
+  it("an unambiguous abbreviation of --help counts too", async () => {
+    // argparse 的長選項唯一前綴縮寫:實測 `status --hel` / `status --he` /
+    // `status --h` 三者都印 usage、exit 0。
+    for (const abbrev of ["--hel", "--he", "--h"]) {
+      expect(await delegated(["status", abbrev])).toEqual([["status", abbrev]]);
+    }
+  });
+
+  it("an ambiguous --h also goes to Python, which is the one that knows it is ambiguous", async () => {
+    // 實測 `watch --h`:exit 2 "ambiguous option: --h could match --help,
+    // --heartbeat"(arm-local 同樣)。委派過去拿到的正是這個答案;TS 自己
+    // 解析的話 --h 會唯一命中 --heartbeat(它的已知旗標裡沒有 --help),
+    // 於是把下一個 token 當成心跳值吞掉,答案是錯的。
+    expect(await delegated(["watch", "--h"])).toEqual([["watch", "--h"]]);
+    expect(await delegated(["arm-local", "--h"])).toEqual([["arm-local", "--h"]]);
+  });
+
+  it("--help after a -- separator is NOT help", async () => {
+    // 實測 `status -- --help`:`--` 之後一律是 positional,argparse 因此**不**
+    // 印 usage,而是 exit 2 "the following arguments are required: --file"。
+    // TS 這側 `--`/`--help` 都落進殘餘 token,也是 exit 2(措辭不同,屬既有
+    // 分歧)。要守住的是「不得委派」。
+    const seen: string[][] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const rc = await main(["status", "--", "--help"], {
+      delegate: (a) => { seen.push(a); return 0; },
+    });
+    const printed = stderrSpy.mock.calls.map(([msg]) => String(msg)).join("");
+    stderrSpy.mockRestore();
+    expect(seen, "`--` 之後的 --help 不是求助,不該委派").toEqual([]);
+    expect(rc).toBe(2);
+    expect(printed).toContain("unrecognized arguments");
+  });
+
+  it("a --help that is a flag VALUE still goes to Python, which errors the same way", async () => {
+    // 實測 `status --file -h`:exit 2 "argument --file: expected one argument"
+    // ——argparse 把 -h 當成另一個選項,所以 --file 沒拿到值。委派回去拿到的
+    // 就是這個答案,比 TS 自己編一份更接近參考實作。
+    expect(await delegated(["status", "--file", "-h"])).toEqual([["status", "--file", "-h"]]);
+  });
+
+  it("does not mistake a real flag for --help", async () => {
+    // 反向的守門:--heartbeat/--file 這些不得被誤判成求助而委派掉。
+    const seen: string[][] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await main(["status", "--file"], { delegate: (a) => { seen.push(a); return 0; } });
+    stderrSpy.mockRestore();
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("delegation to the Python engine", () => {
   it("runs a not-yet-ported command end to end through bin/devloop", () => {
     // 走真的 wrapper、真的 node、真的 python3。PYTHONPATH 設錯的話這裡會
@@ -376,15 +475,39 @@ describe("model: repeated flags and the empty-string --config edge case (M8/M9)"
   });
 
   it('an explicit --config "" is a literal value, not "flag absent" (M9)', async () => {
-    // flag()/rawFlag() must NOT collapse an explicitly-passed empty string
-    // into "flag absent -> substitute the default path". If it did, this
-    // could silently load a real .devloop/config.json instead of the literal
-    // "" the user typed. loadConfig("") reports no file present (Node's
-    // fs.existsSync("") is false), so this must resolve to "inherit" — the
-    // same as passing a config path that plainly does not exist — never a
-    // real profile/model that happens to live at the default relative path.
-    const rc = await main(["model", "--stage", "apply", "--config", ""]);
+    // rawFlag() 不得把「明確傳入的空字串」collapse 成「旗標缺席 -> 換成預設
+    // 路徑」。真的 collapse 的話,使用者打的字面值 "" 會變成 cwd 底下那份
+    // 真的 .devloop/config.json——所以這裡真的造一份出來並 chdir 過去:
+    // 正確實作印 "inherit",collapse 的實作印 "haiku"。只斷言 rc===0 分不出
+    // 兩者(兩邊都是 0),必須斷言 stdout。
+    //
+    // ⚠️ 已知的既有分歧(不是這個分支造成的,151c69f 量到同一組值):
+    //   PY  `model --stage apply --config ""` -> exit 1,未捕捉的
+    //       `IsADirectoryError: [Errno 21] Is a directory: '.'`
+    //       (Path("") 解析成 ".",load_config 去 read_text 一個目錄)
+    //   TS  -> exit 0,stdout "inherit"
+    //       (Node 的 existsSync("") 是 false,loadConfig 回「沒有設定檔」)
+    // 下面釘的是 **TS 現況**,不是「正確答案」;參考實作是 Python,對齊這條
+    // 分歧另案處理。這裡要守住的只有一件事:空字串不得被換成預設路徑。
+    const dir = mkdtempSync(join(tmpdir(), "cli-model-empty-config-"));
+    mkdirSync(join(dir, ".devloop"));
+    writeFileSync(
+      join(dir, ".devloop", "config.json"),
+      JSON.stringify({ models: { apply: "haiku" } }), "utf-8");
+    const origCwd = process.cwd();
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let rc: number;
+    let printed: string;
+    try {
+      process.chdir(dir);
+      rc = await main(["model", "--stage", "apply", "--config", ""]);
+    } finally {
+      process.chdir(origCwd);
+      printed = stdoutSpy.mock.calls.map(([msg]) => String(msg)).join("");
+      stdoutSpy.mockRestore();
+    }
     expect(rc).toBe(0);
+    expect(printed.trim(), '"haiku" 代表 "" 被當成缺席、換成了預設路徑').toBe("inherit");
   });
 });
 

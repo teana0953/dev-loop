@@ -8,9 +8,17 @@ import { ensureArmed, watcherState, lastWatcherAttempt } from "./watcher.js";
 
 const SECTIONS = ["ensureArmedWithoutSpawning", "watcherState", "lastWatcherAttempt"];
 
-/** 真的產生一個已被收屍的 pid——比猜一個大數字可靠。 */
+/**
+ * 真的產生一個已被收屍的 pid——比猜一個大數字可靠。
+ *
+ * spawn 失敗時 `proc.pid` 是 undefined,`as number` 只是把它蒙混過去:所有
+ * `<DEAD>` 的 case 會拿一個 undefined 去比對而靜默退化,不是變紅。所以先確認
+ * 這個 spawn 真的跑起來了(watcher.test.ts 的同名 helper 有同一道斷言)。
+ */
 function reapedPid(): number {
   const proc = spawnSync("/usr/bin/true");
+  expect(proc.error, "reapedPid: /usr/bin/true spawn 失敗").toBeUndefined();
+  expect(proc.status, "reapedPid: /usr/bin/true 沒有正常結束").toBe(0);
   return proc.pid as number;
 }
 
